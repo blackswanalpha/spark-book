@@ -23,6 +23,7 @@ use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::pty_sink::{contains_ris, TermSink, PALETTE};
 use crate::HostError;
 
 /* ---------- Wire types ---------- */
@@ -51,6 +52,11 @@ pub struct Span {
     pub bg: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub bold: bool,
+    /// SGR 2 (faint). Painted as a fainter colour, not as bold — the
+    /// hints and secondary text of most TUIs are dim, and drawing them
+    /// bold inverted their emphasis.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dim: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -143,6 +149,11 @@ pub struct Frame {
     /// Mouse reporting the program asked for, and how to frame it.
     pub mouse_mode: MouseMode,
     pub mouse_encoding: MouseEncoding,
+    /// DEC 1004: send `CSI I` / `CSI O` when the surface gains or loses focus.
+    pub focus_reporting: bool,
+    /// Kitty keyboard flags in force (see `pty_sink::KITTY_SUPPORTED`).
+    /// Non-zero changes how the renderer encodes keys.
+    pub kitty_flags: u8,
     /// Frame counter — lets the renderer drop out-of-order deliveries.
     pub seq: u64,
 }
@@ -179,28 +190,7 @@ pub struct RootSupport {
     pub already_root: bool,
 }
 
-/* ---------- Title sink ----------
-
-   vt100 reports the window title through `Callbacks::set_window_title`
-   (OSC 0/2) rather than exposing it on `Screen`. This sink parks the
-   latest value in a shared slot the frame builder can read.
-*/
-
-#[derive(Clone, Default)]
-struct TitleSink {
-    title: Arc<Mutex<Option<String>>>,
-}
-
-impl vt100::Callbacks for TitleSink {
-    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
-        let text = String::from_utf8_lossy(title).to_string();
-        if let Ok(mut slot) = self.title.lock() {
-            *slot = if text.is_empty() { None } else { Some(text) };
-        }
-    }
-}
-
-type SessionParser = vt100::Parser<TitleSink>;
+type SessionParser = vt100::Parser<TermSink>;
 
 /* ---------- Session state ---------- */
 
@@ -214,8 +204,9 @@ struct Session {
     /// `pty_adopt` moves one when the terminal is popped out.
     owner: Mutex<String>,
     parser: Arc<Mutex<SessionParser>>,
-    /// Latest OSC-set window title, written by `TitleSink`.
-    title: Arc<Mutex<Option<String>>>,
+    /// When the last bell was forwarded; bells are rate limited so a
+    /// program that rings in a loop cannot flood the event channel.
+    last_bell: Mutex<Option<std::time::Instant>>,
     /// Input queue for the writer thread; `None` once the session is over.
     /// See `spawn_writer` for why writes do not happen on the caller.
     writer: Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
@@ -295,7 +286,7 @@ fn poisoned<T>(_: T) -> HostError {
    palette, 16..255 the 6x6x6 cube + greyscale ramp.
 */
 
-fn ansi_hex(idx: u8) -> String {
+pub(crate) fn ansi_rgb(idx: u8) -> (u8, u8, u8) {
     const BASE: [(u8, u8, u8); 16] = [
         (0x00, 0x00, 0x00),
         (0xcd, 0x31, 0x31),
@@ -314,7 +305,7 @@ fn ansi_hex(idx: u8) -> String {
         (0x29, 0xb8, 0xdb),
         (0xff, 0xff, 0xff),
     ];
-    let (r, g, b) = if idx < 16 {
+    if idx < 16 {
         BASE[idx as usize]
     } else if idx < 232 {
         let i = idx - 16;
@@ -329,7 +320,11 @@ fn ansi_hex(idx: u8) -> String {
     } else {
         let v = 8 + (idx - 232) * 10;
         (v, v, v)
-    };
+    }
+}
+
+fn ansi_hex(idx: u8) -> String {
+    let (r, g, b) = ansi_rgb(idx);
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
@@ -350,6 +345,9 @@ fn row_spans(screen: &vt100::Screen, y: u16, cols: u16) -> (Vec<Span>, String) {
     let mut key = String::with_capacity(cols as usize * 2);
 
     let mut run: Option<Span> = None;
+    // Class and width of `run`, for the merge rule below.
+    let mut run_class = GlyphClass::Text;
+    let mut run_cells = 0usize;
     for x in 0..cols {
         let cell = screen.cell(y, x);
         // A wide glyph occupies two columns; the second is a continuation
@@ -359,7 +357,8 @@ fn row_spans(screen: &vt100::Screen, y: u16, cols: u16) -> (Vec<Span>, String) {
             key.push('\u{2}');
             continue;
         }
-        let (contents, fg, bg, bold, italic, underline, inverse) = match cell {
+        let wide = cell.is_some_and(vt100::Cell::is_wide);
+        let (contents, fg, bg, bold, dim, italic, underline, inverse) = match cell {
             Some(c) => {
                 let text = c.contents();
                 (
@@ -370,52 +369,88 @@ fn row_spans(screen: &vt100::Screen, y: u16, cols: u16) -> (Vec<Span>, String) {
                     },
                     color_hex(c.fgcolor()),
                     color_hex(c.bgcolor()),
-                    c.bold() || c.dim(),
+                    c.bold(),
+                    c.dim(),
                     c.italic(),
                     c.underline(),
                     c.inverse(),
                 )
             }
-            None => (" ".to_string(), None, None, false, false, false, false),
+            None => (" ".to_string(), None, None, false, false, false, false, false),
         };
 
         key.push_str(&contents);
         key.push('\u{1}');
         key.push_str(fg.as_deref().unwrap_or("-"));
         key.push_str(bg.as_deref().unwrap_or("-"));
-        key.push(match (bold, italic, underline, inverse) {
-            (false, false, false, false) => '0',
-            _ => '1',
-        });
+        // One character per attribute combination: a row that went from
+        // bold to italic with the same text must still count as changed.
+        key.push(char::from(
+            b'0' + ((bold as u8)
+                | ((dim as u8) << 1)
+                | ((italic as u8) << 2)
+                | ((underline as u8) << 3)
+                | ((inverse as u8) << 4)),
+        ));
 
-        let same = run.as_ref().is_some_and(|r| {
-            r.fg == fg
-                && r.bg == bg
-                && r.bold == bold
-                && r.italic == italic
-                && r.underline == underline
-                && r.inverse == inverse
-        });
+        /* Spans are placed by column, but the text inside one is laid out
+           by the font. A glyph the bundled face does not carry comes from
+           a fallback font with its own advance, and every character after
+           it in the same run drifts off its column — which is how a status
+           line full of emoji or symbols ends up misaligned. Such a glyph
+           gets a span of its own, so the next one starts on its column
+           again. Box drawing and Braille also come from a fallback, but
+           TUIs draw long runs of them and one span per cell would be
+           thousands of spans a screen; short runs keep their drift under
+           a pixel. */
+        let class = if wide {
+            GlyphClass::Own
+        } else {
+            glyph_class(&contents)
+        };
+        let isolate = class == GlyphClass::Own;
+
+        let same = !isolate
+            && class == run_class
+            && (class != GlyphClass::Grid || run_cells < GRID_RUN_MAX)
+            && run.as_ref().is_some_and(|r| {
+                r.fg == fg
+                    && r.bg == bg
+                    && r.bold == bold
+                    && r.dim == dim
+                    && r.italic == italic
+                    && r.underline == underline
+                    && r.inverse == inverse
+            });
 
         if same {
             // `run` is Some whenever `same` is true.
             if let Some(r) = run.as_mut() {
                 r.text.push_str(&contents);
             }
+            run_cells += 1;
         } else {
             if let Some(r) = run.take() {
                 spans.push(r);
             }
-            run = Some(Span {
+            let span = Span {
                 col: x,
                 text: contents,
                 fg,
                 bg,
                 bold,
+                dim,
                 italic,
                 underline,
                 inverse,
-            });
+            };
+            if isolate {
+                spans.push(span);
+            } else {
+                run = Some(span);
+                run_class = class;
+                run_cells = 1;
+            }
         }
     }
     if let Some(r) = run.take() {
@@ -430,6 +465,7 @@ fn row_spans(screen: &vt100::Screen, y: u16, cols: u16) -> (Vec<Span>, String) {
         if last.fg.is_none()
             && last.bg.is_none()
             && !last.bold
+            && !last.dim
             && !last.italic
             && !last.underline
             && !last.inverse
@@ -444,6 +480,39 @@ fn row_spans(screen: &vt100::Screen, y: u16, cols: u16) -> (Vec<Span>, String) {
     }
 
     (spans, key)
+}
+
+/// How a cell's text may share a span with its neighbours (see `row_spans`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlyphClass {
+    /// Latin, which the bundled JetBrains Mono subset carries at the cell's
+    /// exact advance: runs of any length.
+    Text,
+    /// Box drawing, block elements and Braille: from a fallback monospace
+    /// face, near but not exactly the cell advance. Short runs.
+    Grid,
+    /// Anything else — symbols, emoji, CJK: one span per glyph.
+    Own,
+}
+
+/// Longest run of `Grid` glyphs in one span. A fallback monospace advance
+/// is within ~0.5% of the cell, so 16 of them drift well under a pixel.
+const GRID_RUN_MAX: usize = 16;
+
+fn glyph_class(text: &str) -> GlyphClass {
+    let mut class = GlyphClass::Text;
+    for c in text.chars() {
+        let u = c as u32;
+        if u < 0x0250 {
+            continue;
+        }
+        if (0x2500..=0x259f).contains(&u) || (0x2800..=0x28ff).contains(&u) {
+            class = GlyphClass::Grid;
+        } else {
+            return GlyphClass::Own;
+        }
+    }
+    class
 }
 
 fn build_frame(session: &Session, force_full: bool) -> Result<Frame, HostError> {
@@ -490,7 +559,7 @@ fn build_frame(session: &Session, force_full: bool) -> Result<Frame, HostError> 
         cursor_row,
         cursor_col,
         cursor_visible: !screen.hide_cursor(),
-        title: session.title.lock().ok().and_then(|t| t.clone()),
+        title: parser.callbacks().title.clone(),
         application_cursor: screen.application_cursor(),
         bracketed_paste: screen.bracketed_paste(),
         scrollback: screen.scrollback(),
@@ -498,6 +567,8 @@ fn build_frame(session: &Session, force_full: bool) -> Result<Frame, HostError> 
         alternate_screen: screen.alternate_screen(),
         mouse_mode: screen.mouse_protocol_mode().into(),
         mouse_encoding: screen.mouse_protocol_encoding().into(),
+        focus_reporting: parser.callbacks().focus_reporting,
+        kitty_flags: parser.callbacks().kitty_flags(screen.alternate_screen()),
         seq: session.seq.fetch_add(1, Ordering::SeqCst),
     })
 }
@@ -648,6 +719,51 @@ fn build_command(
     // what vt100 models most faithfully.
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // Identify as ourselves, and drop the identity of whatever terminal
+    // launched the app: a sparkBook started from kitty or GNOME Terminal
+    // inherited KITTY_WINDOW_ID / VTE_VERSION, and programs then used
+    // protocols (kitty graphics, VTE's OSC 7 hook) this terminal lacks.
+    cmd.env("TERM_PROGRAM", "sparkBook");
+    cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+    for inherited in [
+        "VTE_VERSION",
+        "KITTY_WINDOW_ID",
+        "KITTY_PID",
+        "KITTY_INSTALLATION_DIR",
+        "WEZTERM_EXECUTABLE",
+        "WEZTERM_PANE",
+        "WEZTERM_UNIX_SOCKET",
+        "ITERM_SESSION_ID",
+        "TERM_SESSION_ID",
+        "WT_SESSION",
+        "WT_PROFILE_ID",
+        "ALACRITTY_WINDOW_ID",
+        "ALACRITTY_SOCKET",
+        "GHOSTTY_RESOURCES_DIR",
+        "GHOSTTY_BIN_DIR",
+        "KONSOLE_VERSION",
+        "KONSOLE_DBUS_SESSION",
+        "TMUX",
+        "TMUX_PANE",
+        // Markers of the Claude Code session sparkBook may have been
+        // started from (`npm run tauri dev` run by an agent). Inherited,
+        // they make a `claude` started in this terminal think it is a
+        // child session and switch its transcripts off. User settings
+        // such as CLAUDE_CODE_USE_BEDROCK are left alone.
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_PID",
+        "CLAUDE_EFFORT",
+        "AI_AGENT",
+    ] {
+        cmd.env_remove(inherited);
+    }
     Ok(cmd)
 }
 
@@ -669,6 +785,35 @@ pub fn pty_default_shell() -> String {
     default_shell()
 }
 
+fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.trim().strip_prefix('#')?;
+    if h.len() != 6 || !h.is_ascii() {
+        return None;
+    }
+    let ch = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some((ch(0)?, ch(2)?, ch(4)?))
+}
+
+/// The theme's terminal colours, for programs that ask (OSC 10/11/12 —
+/// neovim and many TUIs pick a light or dark scheme from the answer).
+/// Unparseable values leave the previous colour in place.
+#[tauri::command]
+pub fn pty_set_palette(fg: String, bg: String, cursor: Option<String>) {
+    let mut p = PALETTE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(c) = parse_hex(&fg) {
+        p.fg = c;
+        p.cursor = c;
+    }
+    if let Some(c) = parse_hex(&bg) {
+        p.bg = c;
+    }
+    if let Some(c) = cursor.as_deref().and_then(parse_hex) {
+        p.cursor = c;
+    }
+}
+
 #[tauri::command]
 pub fn pty_spawn(
     app: AppHandle,
@@ -686,16 +831,22 @@ pub fn pty_spawn(
     let shell = shell.unwrap_or_else(default_shell);
 
     // A cwd that no longer exists makes the spawn fail with an opaque
-    // errno; fall back to home so the terminal always opens.
-    let cwd = {
-        let p = std::path::Path::new(&cwd);
-        if p.is_dir() {
-            cwd.clone()
-        } else {
-            std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| "/".into())
-        }
+    // errno; fall back to home so the terminal always opens. `~` is what
+    // the renderer asks for when no folder is open.
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/".into());
+    let cwd = if cwd == "~" {
+        home.clone()
+    } else if let Some(rest) = cwd.strip_prefix("~/") {
+        format!("{}/{rest}", home.trim_end_matches('/'))
+    } else {
+        cwd
+    };
+    let cwd = if std::path::Path::new(&cwd).is_dir() {
+        cwd
+    } else {
+        home
     };
 
     let pty_system = NativePtySystem::default();
@@ -744,9 +895,6 @@ pub fn pty_spawn(
         manager.next_id.fetch_add(1, Ordering::SeqCst) + 1
     );
 
-    let title_sink = TitleSink::default();
-    let title_slot = title_sink.title.clone();
-
     let session = Arc::new(Session {
         id: id.clone(),
         shell: shell.clone(),
@@ -757,9 +905,9 @@ pub fn pty_spawn(
             rows,
             cols,
             5000,
-            title_sink,
+            TermSink::default(),
         ))),
-        title: title_slot,
+        last_bell: Mutex::new(None),
         writer: Mutex::new(Some(spawn_writer(writer))),
         master: Mutex::new(pair.master),
         child: Mutex::new(child),
@@ -831,6 +979,75 @@ const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 /// thread forever if a notify were ever missed.
 const PUMP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How often a held-back frame re-checks whether its synchronized update ended.
+const SYNC_POLL: std::time::Duration = std::time::Duration::from_millis(4);
+
+/// Bells closer together than this are forwarded once.
+const BELL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// What a chunk of output asked of the terminal besides painting.
+struct Effects {
+    replies: Vec<u8>,
+    clipboard: Vec<String>,
+    bell: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyClipboard {
+    id: String,
+    /// Base64, exactly as the program sent it.
+    data: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PtyBell {
+    id: String,
+}
+
+/// Answer the program's queries and forward clipboard writes and bells.
+///
+/// Replies go through the writer queue like keystrokes do, so they reach
+/// the program in order with whatever the user is typing and never block
+/// the reader.
+fn deliver_effects(app: &AppHandle, session: &Session, fx: Effects) {
+    if !fx.replies.is_empty() {
+        if let Ok(slot) = session.writer.lock() {
+            if let Some(tx) = slot.as_ref() {
+                let _ = tx.send(fx.replies);
+            }
+        }
+    }
+    for data in fx.clipboard {
+        let _ = app.emit(
+            "pty://clipboard",
+            PtyClipboard {
+                id: session.id.clone(),
+                data,
+            },
+        );
+    }
+    if fx.bell {
+        let now = std::time::Instant::now();
+        let due = session.last_bell.lock().is_ok_and(|mut last| {
+            let due = last.is_none_or(|t| now.duration_since(t) >= BELL_INTERVAL);
+            if due {
+                *last = Some(now);
+            }
+            due
+        });
+        if due {
+            let _ = app.emit(
+                "pty://bell",
+                PtyBell {
+                    id: session.id.clone(),
+                },
+            );
+        }
+    }
+}
+
 /// Read PTY output on a dedicated thread and feed the parser.
 ///
 /// Painting is left to a companion thread. Rate limiting from inside the
@@ -877,6 +1094,24 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>, mut reader: Box<dyn Read 
                 // Let the rest of the burst land in the parser, then take
                 // everything that arrived during the wait in one frame.
                 std::thread::sleep(FRAME_INTERVAL);
+
+                /* A program inside a synchronized update (DEC 2026) is
+                   redrawing and has asked not to be painted half-way —
+                   painting now is the flicker it is trying to avoid.
+                   Hold back until it ends the update, or until the sink
+                   gives up on it. */
+                while !closed.load(Ordering::SeqCst) {
+                    let wait = session
+                        .parser
+                        .lock()
+                        .ok()
+                        .and_then(|mut p| p.callbacks_mut().sync_remaining());
+                    match wait {
+                        Some(d) => std::thread::sleep(d.min(SYNC_POLL)),
+                        None => break,
+                    }
+                }
+
                 dirty.take();
                 emit_frame(&app, &session, false);
             }
@@ -893,8 +1128,22 @@ fn spawn_reader(app: AppHandle, session: Arc<Session>, mut reader: Box<dyn Read 
             match reader.read(&mut buf) {
                 Ok(0) => break, // EOF — child exited and closed the pty
                 Ok(n) => {
-                    if let Ok(mut parser) = session.parser.lock() {
+                    let effects = session.parser.lock().ok().map(|mut parser| {
                         parser.process(&buf[..n]);
+                        let alternate = parser.screen().alternate_screen();
+                        let sink = parser.callbacks_mut();
+                        if contains_ris(&buf[..n]) {
+                            sink.hard_reset();
+                        }
+                        sink.after_process(alternate);
+                        Effects {
+                            replies: std::mem::take(&mut sink.replies),
+                            clipboard: std::mem::take(&mut sink.clipboard),
+                            bell: std::mem::take(&mut sink.bell),
+                        }
+                    });
+                    if let Some(fx) = effects {
+                        deliver_effects(&app, &session, fx);
                     }
                     dirty.raise();
                 }
@@ -1075,6 +1324,151 @@ pub fn pty_scroll(
     Ok(next)
 }
 
+/// One search hit. `line` counts from the oldest line of history, so the
+/// viewport offset that shows it is `scrollback_max - line + row`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyMatch {
+    pub line: usize,
+    pub col: u16,
+    /// Width in cells.
+    pub len: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySearch {
+    pub matches: Vec<PtyMatch>,
+    /// History length (the frame's `scrollback_max`) the lines count against.
+    pub scrollback_max: usize,
+    /// True when more matches existed than were returned.
+    pub truncated: bool,
+}
+
+/// Most matches one search returns; enough to page through, bounded so a
+/// one-letter query over 5000 lines cannot produce a megabyte of IPC.
+const SEARCH_MAX: usize = 2000;
+
+/// Each line of history as (cells, column of each cell), oldest first.
+///
+/// vt100 only exposes the rows under its viewport, so the viewport is
+/// walked back through the whole buffer a screen at a time and put back
+/// where it was. A wide glyph's continuation cell is skipped, so a match
+/// maps back to the column the glyph starts on.
+fn history_lines(parser: &mut SessionParser) -> (Vec<Vec<(char, u16)>>, usize) {
+    let screen = parser.screen_mut();
+    let saved = screen.scrollback();
+    screen.set_scrollback(usize::MAX);
+    let max = screen.scrollback();
+    let (rows, cols) = screen.size();
+    let rows_us = rows as usize;
+    let mut lines: Vec<Vec<(char, u16)>> = vec![Vec::new(); max + rows_us];
+
+    let mut offset = max;
+    loop {
+        screen.set_scrollback(offset);
+        for y in 0..rows {
+            let line = max - offset + y as usize;
+            if !lines[line].is_empty() {
+                continue;
+            }
+            let mut cells = Vec::with_capacity(cols as usize);
+            for x in 0..cols {
+                let Some(cell) = screen.cell(y, x) else { continue };
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                let ch = cell.contents().chars().next().unwrap_or(' ');
+                cells.push((ch, x));
+            }
+            lines[line] = cells;
+        }
+        if offset == 0 {
+            break;
+        }
+        offset = offset.saturating_sub(rows_us);
+    }
+    screen.set_scrollback(saved);
+    (lines, max)
+}
+
+fn fold(c: char, case_sensitive: bool) -> char {
+    if case_sensitive {
+        c
+    } else {
+        c.to_lowercase().next().unwrap_or(c)
+    }
+}
+
+/// Plain-text search over one line's cells.
+fn search_line(
+    cells: &[(char, u16)],
+    needle: &[char],
+    case_sensitive: bool,
+    line: usize,
+    out: &mut Vec<PtyMatch>,
+) -> bool {
+    if needle.is_empty() || cells.len() < needle.len() {
+        return true;
+    }
+    let mut i = 0;
+    while i + needle.len() <= cells.len() {
+        let hit = needle
+            .iter()
+            .enumerate()
+            .all(|(k, n)| fold(cells[i + k].0, case_sensitive) == *n);
+        if hit {
+            if out.len() >= SEARCH_MAX {
+                return false;
+            }
+            let start = cells[i].1;
+            let last = cells[i + needle.len() - 1].1;
+            // A wide last glyph covers one more column than it starts on.
+            let next = cells.get(i + needle.len()).map_or(last + 1, |c| c.1);
+            out.push(PtyMatch {
+                line,
+                col: start,
+                len: next.max(last + 1) - start,
+            });
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    true
+}
+
+/// Find `query` in the whole buffer: scrollback and the live screen.
+/// Lines are searched one at a time, so a match does not span a wrap.
+#[tauri::command]
+pub fn pty_search(
+    manager: tauri::State<'_, PtyManager>,
+    id: String,
+    query: String,
+    case_sensitive: Option<bool>,
+) -> Result<PtySearch, HostError> {
+    let session = manager.get(&id)?;
+    let case_sensitive = case_sensitive.unwrap_or(false);
+    let needle: Vec<char> = query.chars().map(|c| fold(c, case_sensitive)).collect();
+    let (lines, max) = {
+        let mut parser = session.parser.lock().map_err(poisoned)?;
+        history_lines(&mut parser)
+    };
+    let mut matches = Vec::new();
+    let mut truncated = false;
+    for (n, cells) in lines.iter().enumerate() {
+        if !search_line(cells, &needle, case_sensitive, n, &mut matches) {
+            truncated = true;
+            break;
+        }
+    }
+    Ok(PtySearch {
+        matches,
+        scrollback_max: max,
+        truncated,
+    })
+}
+
 #[tauri::command]
 pub fn pty_kill(manager: tauri::State<'_, PtyManager>, id: String) -> Result<(), HostError> {
     let session = {
@@ -1223,6 +1617,75 @@ mod tests {
             color_hex(vt100::Color::Rgb(1, 2, 3)).as_deref(),
             Some("#010203")
         );
+    }
+
+    #[test]
+    fn search_walks_scrollback_and_screen() {
+        let mut parser: SessionParser =
+            vt100::Parser::new_with_callbacks(5, 20, 5000, TermSink::default());
+        for i in 0..40 {
+            parser.process(format!("line{i} Needle\r\n").as_bytes());
+        }
+        parser.screen_mut().set_scrollback(3);
+        let (lines, max) = history_lines(&mut parser);
+        assert_eq!(parser.screen().scrollback(), 3, "viewport restored");
+        assert_eq!(lines.len(), max + 5);
+        let first: String = lines[0].iter().map(|c| c.0).collect();
+        assert_eq!(first.trim_end(), "line0 Needle");
+
+        let mut out = Vec::new();
+        let needle: Vec<char> = "needle".chars().collect();
+        for (n, cells) in lines.iter().enumerate() {
+            search_line(cells, &needle, false, n, &mut out);
+        }
+        assert_eq!(out.len(), 40);
+        assert_eq!(out[0], PtyMatch { line: 0, col: 6, len: 6 });
+
+        let mut exact = Vec::new();
+        for (n, cells) in lines.iter().enumerate() {
+            search_line(cells, &needle, true, n, &mut exact);
+        }
+        assert!(exact.is_empty(), "case-sensitive miss");
+    }
+
+    #[test]
+    fn search_maps_wide_glyphs_to_their_columns() {
+        let mut parser: SessionParser =
+            vt100::Parser::new_with_callbacks(3, 20, 0, TermSink::default());
+        parser.process("中文 abc".as_bytes());
+        let (lines, _) = history_lines(&mut parser);
+        let mut out = Vec::new();
+        search_line(&lines[0], &['a', 'b', 'c'], false, 0, &mut out);
+        assert_eq!(out, vec![PtyMatch { line: 0, col: 5, len: 3 }]);
+        out.clear();
+        search_line(&lines[0], &['文'], false, 0, &mut out);
+        assert_eq!(out, vec![PtyMatch { line: 0, col: 2, len: 2 }]);
+    }
+
+    #[test]
+    fn box_drawing_runs_are_capped_and_kept_apart_from_text() {
+        let mut parser = vt100::Parser::new(3, 60, 0);
+        let line = format!("ab{}cd", "─".repeat(40));
+        parser.process(line.as_bytes());
+        let (spans, _) = row_spans(parser.screen(), 0, 60);
+        let texts: Vec<(u16, usize)> = spans.iter().map(|s| (s.col, s.text.chars().count())).collect();
+        assert_eq!(
+            texts,
+            vec![(0, 2), (2, 16), (18, 16), (34, 8), (42, 2)],
+            "{spans:?}"
+        );
+    }
+
+    #[test]
+    fn symbols_get_their_own_span_and_dim_is_not_bold() {
+        let mut parser = vt100::Parser::new(3, 30, 0);
+        parser.process("\x1b[2mhint\x1b[0m ⏺ done".as_bytes());
+        let (spans, _) = row_spans(parser.screen(), 0, 30);
+        assert!(spans[0].dim && !spans[0].bold, "{spans:?}");
+        let glyph = spans.iter().find(|s| s.text == "⏺").expect("isolated glyph");
+        assert_eq!(glyph.col, 5);
+        let after = spans.iter().find(|s| s.text.contains("done")).expect("tail");
+        assert_eq!(after.col, 6, "text after the glyph starts on its own column");
     }
 
     #[test]

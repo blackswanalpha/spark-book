@@ -101,13 +101,13 @@ export function WelcomeWizard({ open, onOpenChange }: WelcomeWizardProps) {
               <div className="wizard__step" data-step="intro">
                 <img src="/spark-mark.svg" alt="" width={56} height={56} className="wizard__logo" />
                 <p className="wizard__lede">
-                  One window for markdown, rich text, and code. The file on disk is the source of truth —
-                  no proprietary format, no lock-in.
+                  One window for notes, documents, code, pictures and PDFs. The file on disk is the source
+                  of truth — no proprietary format, no lock-in.
                 </p>
                 <ul className="wizard__points">
-                  <li><strong>Three surfaces</strong> — markdown, rich text and code, switchable per document.</li>
+                  <li><strong>Nine surfaces</strong> — markdown, rich text, code, HTML, SVG, image viewer and editor, animation and PDF.</li>
                   <li><strong>File as truth</strong> — everything round-trips through plain files.</li>
-                  <li><strong>Native host</strong> — dialogs, file watching and recents run on the host.</li>
+                  <li><strong>A real terminal</strong> — shells, TUIs and agents such as Claude Code run in tabs beside your files.</li>
                 </ul>
                 <div className="wizard__meta">v{version}</div>
               </div>

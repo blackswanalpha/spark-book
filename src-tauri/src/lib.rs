@@ -1,5 +1,6 @@
 mod checkpoint;
 mod pty;
+mod pty_sink;
 mod update_env;
 mod watch;
 
@@ -334,6 +335,45 @@ fn open_with_os(path: String) -> Result<(), HostError> {
     }
 }
 
+/// Whether a link from terminal output may be handed to the OS.
+///
+/// Terminal output is untrusted text. Only web links pass, and nothing
+/// that a shell would split or that `cmd /C start` would treat as a
+/// second command.
+fn safe_url(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://"))
+        && url.len() <= 4096
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '`' | '<' | '>'))
+}
+
+/// Open a web link clicked in the terminal in the default browser.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), HostError> {
+    use std::process::Command;
+    if !safe_url(&url) {
+        return Err(HostError::InvalidPath {
+            path: url,
+            reason: "only http(s) links can be opened".into(),
+        });
+    }
+    let spawned = if cfg!(target_os = "macos") {
+        Command::new("open").arg(&url).spawn()
+    } else if cfg!(target_os = "windows") {
+        // No shell in between: `cmd /C start` would run whatever follows
+        // an `&` in the query string.
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .spawn()
+    } else {
+        Command::new("xdg-open").arg(&url).spawn()
+    };
+    spawned.map(|_| ()).map_err(|e| HostError::Internal {
+        message: e.to_string(),
+    })
+}
+
 /// Let the webview stream one file through the asset protocol. The
 /// configured scope is empty, so the media player can reach exactly the
 /// files the user opened and nothing else on disk.
@@ -572,6 +612,7 @@ pub fn run() {
             open_in_terminal,
             reveal_in_folder,
             open_with_os,
+            open_url,
             recents_get,
             recents_add,
             recents_clear,
@@ -591,6 +632,8 @@ pub fn run() {
             pty::pty_list,
             pty::pty_root_support,
             pty::pty_default_shell,
+            pty::pty_set_palette,
+            pty::pty_search,
             update_env::update_environment,
             update_env::restart_app,
             watch::watch_path,
@@ -650,4 +693,20 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::safe_url;
+
+    #[test]
+    fn only_plain_web_links_pass() {
+        assert!(safe_url("https://example.com/a?b=1&c=2#x"));
+        assert!(safe_url("http://localhost:1420/"));
+        assert!(!safe_url("file:///etc/passwd"));
+        assert!(!safe_url("javascript:alert(1)"));
+        assert!(!safe_url("https://a.com/ x"));
+        assert!(!safe_url("https://a.com/\"&calc"));
+        assert!(!safe_url("https://a.com/\ncalc"));
+    }
 }

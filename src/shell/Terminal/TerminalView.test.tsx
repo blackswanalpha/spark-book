@@ -201,6 +201,44 @@ describe("TerminalView — keys reach the pty", () => {
     expect(ptyWrite).not.toHaveBeenCalled();
   });
 
+  it("forwards Ctrl+V when the clipboard holds no text, so an image paste reaches the program", async () => {
+    /* The report: pasting a screenshot into Claude Code did nothing.
+       Ctrl+V was taken as the surface's paste, found no text, and sent
+       nothing — while Claude Code reads the image off the clipboard itself
+       once it sees Ctrl+V. */
+    const { readClipboardText } = await import("@bridge/clipboard");
+    const surface = await mountTerminal();
+
+    vi.mocked(readClipboardText).mockResolvedValueOnce("");
+    press(surface, { key: "v", ctrlKey: true });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(ptyWrite).toHaveBeenCalledWith("pty-1", "\x16");
+
+    // Under the kitty keyboard protocol the same key is CSI u.
+    ptyWrite.mockClear();
+    pushFrame({ kittyFlags: 1 });
+    vi.mocked(readClipboardText).mockResolvedValueOnce("");
+    press(surface, { key: "v", ctrlKey: true });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(ptyWrite).toHaveBeenCalledWith("pty-1", "\x1b[118;5u");
+  });
+
+  it("pastes text on Ctrl+V when there is text", async () => {
+    const surface = await mountTerminal();
+    press(surface, { key: "v", ctrlKey: true });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(ptyWrite).toHaveBeenCalledWith("pty-1", "pasted");
+  });
+
   it("keeps focus on the surface after a key it handles", async () => {
     const surface = await mountTerminal();
     press(surface, { key: "Tab", shiftKey: true });

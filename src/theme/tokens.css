@@ -101,6 +101,11 @@
   --z-menu:    20;
   --z-overlay: 30;
   --z-modal:   40;
+  /* Menus portalled to <body> (context menus, dropdowns, popovers). They
+     must clear the surface that opened them, and the terminal panel and
+     the dialogs are modal-layer surfaces: at --z-menu a right-click menu
+     in the terminal opened underneath the panel. */
+  --z-popover: 45;
   --z-toast:   50;
   --z-splash:  100;
 }

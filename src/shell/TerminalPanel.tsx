@@ -69,7 +69,8 @@ function useNewTerminalCwd(): string {
     if (selected) return directoryOf(children, selected);
     if (activePath) return dirOf(activePath);
     if (root) return root;
-    return "/";
+    // No folder open: home, as any terminal starts. The host expands it.
+    return "~";
   }, [selected, children, activePath, root]);
 }
 
@@ -89,11 +90,49 @@ export interface PoppedTab extends RestoredTab {
 const PANEL_CHROME_H = 40 + 32 + 28 + 8;
 const PANEL_CHROME_W = 8 + 2;
 
+/* ---------- Attention ----------
+
+   A bell (or a notification OSC) from a shell the user is not looking
+   at marks its tab, so a long build or an agent waiting on a question
+   is noticed without polling every tab. Looking at the tab clears it. */
+
+function useAttention(activeId: string | null) {
+  const [ids, setIds] = useState<ReadonlySet<string>>(() => new Set());
+  const activeRef = useRef(activeId);
+  activeRef.current = activeId;
+
+  const clear = useCallback((id: string | null) => {
+    if (!id) return;
+    setIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const ring = useCallback((id: string) => {
+    // The tab in front of a focused window needs no badge.
+    if (id === activeRef.current && document.hasFocus()) return;
+    setIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+  }, []);
+
+  useEffect(() => clear(activeId), [activeId, clear]);
+  useEffect(() => {
+    const onFocus = () => clear(activeRef.current);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [clear]);
+
+  return { attention: ids, ring };
+}
+
 /* ---------- Tab strip ---------- */
 
 function SessionTabs({
   sessions,
   activeId,
+  attention,
   onSelect,
   onClose,
   onAdd,
@@ -101,6 +140,8 @@ function SessionTabs({
 }: {
   sessions: TerminalSession[];
   activeId: string | null;
+  /** Sessions that rang the bell since they were last looked at. */
+  attention?: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onAdd: () => void;
@@ -208,6 +249,9 @@ function SessionTabs({
                 className={s.privilege === "root" ? "term__tabIcon--root" : undefined}
               />
               <span className="term__tabName">{displayName(s)}</span>
+              {attention?.has(s.id) && (
+                <span className="term__tabBell" role="status" aria-label="Needs attention" />
+              )}
               <button
                 type="button"
                 className="term__tabClose"
@@ -250,6 +294,7 @@ function SessionSurfaces({
   focusOnShow = true,
   onStatus,
   onTitle,
+  onBell,
 }: {
   sessions: TerminalSession[];
   activeId: string | null;
@@ -258,6 +303,7 @@ function SessionSurfaces({
   focusOnShow?: boolean;
   onStatus: (id: string, s: TerminalStatus) => void;
   onTitle: (id: string, t: string | null) => void;
+  onBell?: (id: string) => void;
 }) {
   return (
     <>
@@ -282,6 +328,7 @@ function SessionSurfaces({
             focusOnShow={focusOnShow}
             onStatus={(st) => onStatus(s.id, st)}
             onTitle={(t) => onTitle(s.id, t)}
+            onBell={() => onBell?.(s.id)}
           />
         </div>
       ))}
@@ -316,6 +363,7 @@ export function TerminalDialog({
   const newCwd = useNewTerminalCwd();
   const sessions = useTerminal((s) => s.sessions);
   const activeId = useTerminal((s) => s.activeId);
+  const { attention, ring } = useAttention(activeId);
   const mobile = useTerminal((s) => s.mobile);
   const setMobile = useTerminal((s) => s.setMobile);
   const ensureSession = useTerminal((s) => s.ensureSession);
@@ -694,6 +742,7 @@ export function TerminalDialog({
       <SessionTabs
         sessions={sessions}
         activeId={activeId}
+        attention={attention}
         onSelect={setActiveSession}
         onClose={closeSessionById}
         onAdd={() => addSession(newCwd)}
@@ -737,6 +786,7 @@ export function TerminalDialog({
         focusOnShow={!restoredOpen}
         onStatus={onStatus}
         onTitle={onTitle}
+        onBell={ring}
       />
 
       <div className="term__footer">
@@ -811,6 +861,7 @@ export function TerminalStandaloneInner({
     return { sessions, activeId: sessions[idx].id, nextOrdinal: sessions.length + 1 };
   });
   const { sessions, activeId } = state;
+  const { attention, ring } = useAttention(activeId);
 
   const [mobile, setMobile] = useState(initialMobile);
   const mobileW = useSettings((s) => s.settings.terminal.mobileWidth);
@@ -937,6 +988,7 @@ export function TerminalStandaloneInner({
       <SessionTabs
         sessions={sessions}
         activeId={activeId}
+        attention={attention}
         onSelect={setActiveId}
         onClose={onClose}
         onAdd={onAdd}
@@ -959,6 +1011,7 @@ export function TerminalStandaloneInner({
         holderClass="term-standalone__body"
         onStatus={noop}
         onTitle={onTitle}
+        onBell={ring}
       />
     </div>
   );
