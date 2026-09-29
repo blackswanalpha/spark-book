@@ -2,8 +2,8 @@
    sparkBook · src/editor/RichEditor/index.tsx
    TipTap-based rich-text surface. Headless, schema-driven.
    Now includes a top toolbar, a slash-menu block-type picker,
-   an inline link editor, and listeners for the global format
-   + word-wrap command events.
+   an inline link editor, and listeners for the global format,
+   word-wrap, and Select All command events.
    ============================================================ */
 import { useEditor, EditorContent, BubbleMenu } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -261,6 +261,42 @@ export function RichEditor({ docId }: { docId: string }) {
       window.removeEventListener("spark:rich:format:link", onLink);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
+  /* ----------------------------------------------------------------
+     Block formats + Select All. Promote/demote step the heading level
+     the same way the markdown surface does: promote lowers the level
+     number (H1 falls back to a paragraph), demote raises it up to H6.
+     ---------------------------------------------------------------- */
+  useEffect(() => {
+    if (!editor) return;
+    const shiftHeading = (delta: 1 | -1) => {
+      const cur = editor.isActive("heading") ? (editor.getAttributes("heading").level as number) : 0;
+      const next = Math.max(0, Math.min(6, cur + delta));
+      if (next === cur) return;
+      if (next === 0) editor.chain().focus().setParagraph().run();
+      else editor.chain().focus().setHeading({ level: next as 1 | 2 | 3 | 4 | 5 | 6 }).run();
+    };
+    const onPromote = () => shiftHeading(-1);
+    const onDemote = () => shiftHeading(1);
+    const onBullet = () => editor.chain().focus().toggleBulletList().run();
+    const onNumber = () => editor.chain().focus().toggleOrderedList().run();
+    const onQuote = () => editor.chain().focus().toggleBlockquote().run();
+    const onSelectAll = () => editor.chain().focus().selectAll().run();
+    window.addEventListener("spark:rich:format:headingPromote", onPromote);
+    window.addEventListener("spark:rich:format:headingDemote", onDemote);
+    window.addEventListener("spark:rich:format:listBullet", onBullet);
+    window.addEventListener("spark:rich:format:listNumber", onNumber);
+    window.addEventListener("spark:rich:format:quote", onQuote);
+    window.addEventListener("spark:selection:selectAll", onSelectAll);
+    return () => {
+      window.removeEventListener("spark:rich:format:headingPromote", onPromote);
+      window.removeEventListener("spark:rich:format:headingDemote", onDemote);
+      window.removeEventListener("spark:rich:format:listBullet", onBullet);
+      window.removeEventListener("spark:rich:format:listNumber", onNumber);
+      window.removeEventListener("spark:rich:format:quote", onQuote);
+      window.removeEventListener("spark:selection:selectAll", onSelectAll);
+    };
   }, [editor]);
 
   /* ----------------------------------------------------------------

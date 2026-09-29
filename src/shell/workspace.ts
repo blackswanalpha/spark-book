@@ -13,7 +13,8 @@
    before `hydrated`, so the restore's own store writes never feed
    back into the cache they came from.
    ============================================================ */
-import { readFile, readFileBase64, isTauri } from "@bridge/commands";
+import { isTauri } from "@bridge/commands";
+import { readForMode } from "./openDocument";
 import { useDocs, isBinaryMode } from "@store/documents";
 import { useExplorer } from "@store/explorer";
 import { useTerminal } from "@store/terminal";
@@ -166,10 +167,9 @@ export async function restoreWorkspace(ws: Workspace): Promise<RestoreResult> {
     /* 2. Tabs. Reads run in parallel; a rejection means the file is gone. */
     const wanted = ws.tabs.slice(0, MAX_RESTORE_TABS);
     // Image and PDF tabs hold bytes, not text: reading them through
-    // `readFile` would return mojibake (or fail on invalid UTF-8).
-    const results = await Promise.allSettled(
-      wanted.map((t) => (isBinaryMode(t.mode) ? readFileBase64(t.path) : readFile(t.path))),
-    );
+    // `readFile` would return mojibake (or fail on invalid UTF-8). Video
+    // and audio tabs are not read at all; they stream from the path.
+    const results = await Promise.allSettled(wanted.map((t) => readForMode(t.path, t.mode)));
 
     const openDocs = useDocs.getState().open;
     const ids: string[] = [];

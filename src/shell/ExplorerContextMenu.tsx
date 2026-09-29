@@ -1,282 +1,200 @@
 /* ============================================================
    sparkBook · src/shell/ExplorerContextMenu.tsx
-   Right-click bubble menu for the file explorer. Wraps a
-   trigger element and renders a context menu with:
-     • New File        • Cut
-     • New Folder      • Copy
-     • Open in Terminal • Paste
-     • Reveal in OS    • Rename
-     • Refactor        • Delete
-   Entries are filtered based on whether the target is a
-   file/folder/root and on current clipboard state.
+   Right-click menu for the file explorer, plus the delete
+   confirmation it shares with the keyboard.
+     • New File / New Folder      • Cut / Copy / Paste / Duplicate
+     • Open as Root Folder        • Copy Path / Copy Relative Path
+     • Open in Terminal
+     • Reveal in File Manager     • Rename (F2) / Delete (Del)
+   Create and rename happen in an inline row in the tree; this
+   menu only starts them through the explorer store. Actions that
+   need the pane (open a file, confirm a delete, toasts) come from
+   ExplorerActionsContext, provided by the explorer.
    ============================================================ */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo } from "react";
 import { ContextMenu, type ContextMenuEntry } from "@ui/ContextMenu";
-import { Input } from "@ui/Input";
 import { Dialog, DialogFooter } from "@ui/Dialog";
 import { Button } from "@ui/Button";
-import { useExplorer } from "@store/explorer";
+import { useExplorer, baseName, dirName } from "@store/explorer";
 import { openTerminalAt } from "@store/terminal";
+import { writeClipboardText } from "@bridge/clipboard";
 
-export type ExplorerAction =
-  | "new-file"
-  | "new-folder"
-  | "open-in-terminal"
-  | "reveal-in-os"
-  | "cut"
-  | "copy"
-  | "paste"
-  | "rename"
-  | "refactor"
-  | "delete";
-
-export interface ExplorerContextMenuProps {
-  /** The path the right-click landed on. For directory-row this is the
-   *  directory path; for the empty tree area this is the explorer root. */
+export interface DeleteTarget {
   path: string;
-  /** Whether the target is a directory. Determines which entries are
-   *  shown (e.g. "Open in terminal" needs a directory). */
-  isDir: boolean;
-  /** Display name (used for the delete-confirm dialog). */
   name: string;
-  /** Called when the user wants to create a new file/folder here.
-   *  The parent component owns the CreateDialog; we just route the
-   *  click back via this callback so existing behaviour is reused. */
-  onRequestCreate: (kind: "file" | "folder", targetDir: string) => void;
-  /** Called when the user opens the file with the OS (double-click flow). */
-  onOpen?: (path: string) => void;
-  /** Info / error toasts. */
+  isDir: boolean;
+  /** Skip the OS trash (Shift+Delete). */
+  permanent: boolean;
+}
+
+export interface ExplorerActions {
+  root: string;
+  onOpen: (path: string) => void;
+  requestDelete: (target: DeleteTarget) => void;
   onInfo?: (message: string) => void;
   onError?: (title: string, detail?: string) => void;
-  /** The element that should receive right-clicks. */
+}
+
+export const ExplorerActionsContext = createContext<ExplorerActions | null>(null);
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const key = (k: string) => (isMac ? `⌘${k}` : `Ctrl+${k}`);
+
+/** `path` relative to the explorer root, for "Copy Relative Path". */
+export function relativePath(path: string, root: string): string {
+  if (path === root) return ".";
+  const prefix = root.endsWith("/") || root.endsWith("\\") ? root : root + "/";
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+}
+
+/**
+ * Run an explorer action against `path`. Shared by the context menu
+ * and the tree's keyboard handler so the two cannot drift apart.
+ */
+export async function runExplorerAction(
+  id: string,
+  target: { path: string; isDir: boolean },
+  actions: ExplorerActions,
+  opts: { permanent?: boolean } = {},
+): Promise<void> {
+  const api = useExplorer.getState();
+  const { path, isDir } = target;
+  const name = baseName(path) || path;
+  const targetDir = isDir ? path : dirName(path);
+  switch (id) {
+    case "new-file":
+      api.beginCreate("file", targetDir);
+      return;
+    case "new-folder":
+      api.beginCreate("folder", targetDir);
+      return;
+    case "open-in-terminal":
+      openTerminalAt(targetDir);
+      actions.onInfo?.(`Terminal: ${targetDir}`);
+      return;
+    case "open-as-root":
+      if (isDir && path !== actions.root) void api.navigateTo(path);
+      return;
+    case "reveal-in-os": {
+      const res = await api.revealInOS(path);
+      if (!res.ok) actions.onError?.("Reveal failed", res.error);
+      return;
+    }
+    case "cut":
+    case "copy":
+      if (path === actions.root) return;
+      api.setClipboard({ op: id, path });
+      actions.onInfo?.(`${id === "cut" ? "Cut" : "Copied"}: ${name}`);
+      return;
+    case "paste": {
+      if (!api.clipboard) return;
+      const res = await api.pasteInto(targetDir);
+      if (!res.ok) actions.onError?.("Paste failed", res.error);
+      return;
+    }
+    case "duplicate": {
+      if (path === actions.root) return;
+      const res = await api.duplicate(path);
+      if (!res.ok) actions.onError?.("Duplicate failed", res.error);
+      return;
+    }
+    case "copy-path":
+    case "copy-relative-path": {
+      const text = id === "copy-path" ? path : relativePath(path, actions.root);
+      const ok = await writeClipboardText(text);
+      if (ok) actions.onInfo?.(`Copied ${text}`);
+      else actions.onError?.("Copy failed", "The clipboard is not available.");
+      return;
+    }
+    case "rename":
+      api.beginRename(path);
+      return;
+    case "delete":
+      if (path === actions.root) return;
+      actions.requestDelete({ path, name, isDir, permanent: Boolean(opts.permanent) });
+      return;
+  }
+}
+
+export interface ExplorerContextMenuProps {
+  /** The path the right-click landed on: a row, or the explorer root
+   *  for the blank area below the rows. */
+  path: string;
+  isDir: boolean;
+  /** The element that receives right-clicks. */
   children: React.ReactElement;
 }
 
-function parentDir(path: string): string {
-  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  if (idx <= 0) return "/";
-  return path.slice(0, idx) || "/";
-}
-
-function basename(path: string): string {
-  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return idx >= 0 ? path.slice(idx + 1) : path;
-}
-
-export function ExplorerContextMenu({
-  path, isDir, name, onRequestCreate, onOpen, onInfo, onError, children,
-}: ExplorerContextMenuProps) {
-  const clipboard = useExplorer((s) => s.clipboard);
-  const [renameOpen, setRenameOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-
-  const targetDir = isDir ? path : parentDir(path);
-  const hasClipboard = !!clipboard;
+export function ExplorerContextMenu({ path, isDir, children }: ExplorerContextMenuProps) {
+  const actions = useContext(ExplorerActionsContext);
+  const hasClipboard = useExplorer((s) => s.clipboard !== null);
+  const isRoot = actions?.root === path;
 
   const entries = useMemo<ContextMenuEntry[]>(() => {
     const list: ContextMenuEntry[] = [
-      { id: "new-file",   label: "New File…",        icon: "file-plus" },
-      { id: "new-folder", label: "New Folder…",      icon: "folder-plus" },
+      { id: "new-file",   label: "New File…",   icon: "file-plus" },
+      { id: "new-folder", label: "New Folder…", icon: "folder-plus" },
+      { separator: true, id: "sep-open" },
     ];
-    if (isDir) {
-      list.push({ id: "open-in-terminal", label: "Open in Terminal",  icon: "terminal" });
-    }
+    if (isDir && !isRoot) list.push({ id: "open-as-root", label: "Open as Root Folder", icon: "folder-open", shortcut: "Alt+↓" });
+    if (isDir) list.push({ id: "open-in-terminal", label: "Open in Terminal", icon: "terminal" });
     list.push({ id: "reveal-in-os", label: "Reveal in File Manager", icon: "external" });
-    list.push({ separator: true, id: "sep-1" });
-    list.push({ id: "cut",  label: "Cut",  icon: "scissors", shortcut: "⌘X" });
-    list.push({ id: "copy", label: "Copy", icon: "copy",     shortcut: "⌘C" });
-    list.push({ id: "paste", label: "Paste", icon: "clipboard", shortcut: "⌘V", disabled: !hasClipboard });
-    list.push({ separator: true, id: "sep-2" });
-    list.push({ id: "rename",   label: "Rename…", icon: "pencil" });
-    list.push({ id: "refactor", label: "Refactor…", icon: "arrows-clockwise" });
-    list.push({ separator: true, id: "sep-3" });
-    list.push({ id: "delete", label: "Delete", icon: "trash", destructive: true, shortcut: "⌫" });
+    list.push({ separator: true, id: "sep-clip" });
+    if (!isRoot) {
+      list.push({ id: "cut",  label: "Cut",  icon: "scissors", shortcut: key("X") });
+      list.push({ id: "copy", label: "Copy", icon: "copy",     shortcut: key("C") });
+    }
+    list.push({ id: "paste", label: "Paste", icon: "clipboard", shortcut: key("V"), disabled: !hasClipboard });
+    if (!isRoot) list.push({ id: "duplicate", label: "Duplicate", icon: "copy" });
+    list.push({ separator: true, id: "sep-path" });
+    list.push({ id: "copy-path", label: "Copy Path", icon: "copy-path" });
+    list.push({ id: "copy-relative-path", label: "Copy Relative Path", icon: "copy-path" });
+    if (!isRoot) {
+      list.push({ separator: true, id: "sep-edit" });
+      list.push({ id: "rename", label: "Rename…", icon: "pencil", shortcut: "F2" });
+      list.push({ id: "delete", label: "Delete", icon: "trash", destructive: true, shortcut: isMac ? "⌘⌫" : "Del" });
+    }
     return list;
-  }, [isDir, hasClipboard]);
+  }, [isDir, isRoot, hasClipboard]);
 
-  const runAction = useCallback(async (id: string) => {
-    const api = useExplorer.getState();
-    switch (id as ExplorerAction) {
-      case "new-file":
-        onRequestCreate("file", targetDir);
-        return;
-      case "new-folder":
-        onRequestCreate("folder", targetDir);
-        return;
-      case "open-in-terminal": {
-        // Route to the in-app terminal panel instead of spawning an OS terminal.
-        // Keep explorer selection in sync so TerminalPanel cwd derives correctly.
-        const dir = isDir ? path : parentDir(path);
-        openTerminalAt(dir);
-        onInfo?.(`Terminal: ${dir}`);
-        return;
-      }
-      case "reveal-in-os": {
-        const res = await api.revealInOS(path);
-        if (!res.ok) onError?.("Reveal failed", res.error);
-        return;
-      }
-      case "cut": {
-        api.setClipboard({ op: "cut", path });
-        onInfo?.(`Cut: ${name}`);
-        return;
-      }
-      case "copy": {
-        api.setClipboard({ op: "copy", path });
-        onInfo?.(`Copied: ${name}`);
-        return;
-      }
-      case "paste": {
-        if (!clipboard) return;
-        const res = await api.pasteInto(targetDir);
-        if (!res.ok) onError?.("Paste failed", res.error);
-        else onInfo?.(`Pasted into ${basename(targetDir) || targetDir}`);
-        return;
-      }
-      case "rename":
-        setRenameOpen(true);
-        return;
-      case "refactor":
-        // Today refactor == rename. A future PR can route to language-aware
-        // refactor providers; for now we surface it via the rename dialog
-        // so users can pick a new identifier.
-        setRenameOpen(true);
-        return;
-      case "delete":
-        setDeleteOpen(true);
-        return;
-    }
-  }, [path, name, targetDir, clipboard, onRequestCreate, onInfo, onError]);
+  const onSelect = useCallback((id: string) => {
+    if (actions) void runExplorerAction(id, { path, isDir }, actions);
+  }, [actions, path, isDir]);
 
   return (
-    <>
-      <ContextMenu entries={entries} onSelect={runAction}>
-        {children}
-      </ContextMenu>
-      <RenameDialog
-        open={renameOpen}
-        onOpenChange={setRenameOpen}
-        path={path}
-        initialName={name}
-        onInfo={onInfo}
-        onError={onError}
-      />
-      <DeleteDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        path={path}
-        name={name}
-        isDir={isDir}
-        onInfo={onInfo}
-        onError={onError}
-      />
-    </>
-  );
-}
-
-/* ---------- Rename dialog ---------- */
-function RenameDialog({
-  open, onOpenChange, path, initialName, onInfo, onError,
-}: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  path: string;
-  initialName: string;
-  onInfo?: (m: string) => void;
-  onError?: (m: string, d?: string) => void;
-}) {
-  const [name, setName] = useState(initialName);
-  const [busy, setBusy] = useState(false);
-
-  // reset on open
-  useEffect(() => {
-    if (open) { setName(initialName); setBusy(false); }
-  }, [open, initialName]);
-
-  const confirm = useCallback(async () => {
-    const trimmed = name.trim();
-    if (!trimmed || trimmed === initialName) { onOpenChange(false); return; }
-    if (trimmed.includes("/") || trimmed.includes("\\")) {
-      onError?.("Invalid name", "Name must not contain / or \\");
-      return;
-    }
-    setBusy(true);
-    const res = await useExplorer.getState().renamePath(path, trimmed);
-    setBusy(false);
-    if (res.ok) {
-      onInfo?.(`Renamed to ${trimmed}`);
-      onOpenChange(false);
-    } else {
-      onError?.("Rename failed", res.error);
-    }
-  }, [name, initialName, path, onInfo, onError, onOpenChange]);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="Rename" description="Choose a new name." size="sm">
-      <div className="create-dialog">
-        <div className="create-dialog__field">
-          <label className="create-dialog__label">New name</label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={initialName}
-            inputSize="md"
-            autoFocus
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void confirm(); } }}
-          />
-        </div>
-      </div>
-      <DialogFooter>
-        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
-        <Button variant="primary" onClick={() => { void confirm(); }} disabled={!name.trim() || busy}>
-          Rename
-        </Button>
-      </DialogFooter>
-    </Dialog>
+    <ContextMenu entries={entries} onSelect={onSelect}>
+      {children}
+    </ContextMenu>
   );
 }
 
 /* ---------- Delete confirm dialog ---------- */
-function DeleteDialog({
-  open, onOpenChange, path, name, isDir, onInfo, onError,
+export function DeleteDialog({
+  target, onOpenChange, onConfirm, busy,
 }: {
-  open: boolean;
+  target: DeleteTarget | null;
   onOpenChange: (o: boolean) => void;
-  path: string;
-  name: string;
-  isDir: boolean;
-  onInfo?: (m: string) => void;
-  onError?: (m: string, d?: string) => void;
+  onConfirm: () => void;
+  busy: boolean;
 }) {
-  const [busy, setBusy] = useState(false);
-  const confirm = useCallback(async () => {
-    setBusy(true);
-    const res = await useExplorer.getState().deletePath(path);
-    setBusy(false);
-    if (res.ok) {
-      onInfo?.(`Deleted ${isDir ? "folder" : "file"} ${name}`);
-      // Note: any tab still open for `path` will surface a "missing file" error
-      // on its next save attempt; the editor already handles that case.
-      onOpenChange(false);
-    } else {
-      onError?.("Delete failed", res.error);
-    }
-  }, [path, name, isDir, onInfo, onError, onOpenChange]);
-
+  const what = target?.isDir ? "folder" : "file";
+  const description = !target
+    ? ""
+    : target.permanent
+      ? `“${target.name}”${target.isDir ? " and everything in it" : ""} will be deleted permanently. This cannot be undone.`
+      : `“${target.name}”${target.isDir ? " and everything in it" : ""} will be moved to the Trash. You can restore it from there.`;
   return (
     <Dialog
-      open={open}
+      open={target !== null}
       onOpenChange={onOpenChange}
-      title={isDir ? "Delete folder?" : "Delete file?"}
-      description={isDir
-        ? `This will recursively delete “${name}” and all of its contents.`
-        : `This will permanently delete “${name}”.`}
+      title={target?.permanent ? `Delete ${what} permanently?` : `Move ${what} to Trash?`}
+      description={description}
       size="sm"
     >
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
-        <Button variant="danger" onClick={() => { void confirm(); }} disabled={busy}>
-          Delete
+        <Button variant="danger" onClick={onConfirm} disabled={busy} autoFocus>
+          {target?.permanent ? "Delete" : "Move to Trash"}
         </Button>
       </DialogFooter>
     </Dialog>

@@ -8,7 +8,8 @@
      • language detection (extension + content heuristics)
      • top toolbar: go-to-line, toggle-comment, toggle-wrap, format
      • language chip in the corner
-     • listens to global spark:code:* + view.toggleWordWrap events
+     • listens to global spark:code:*, spark:view:toggleWordWrap,
+       and the Edit / Selection menu events (see editEvents.ts)
    ============================================================ */
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
@@ -64,6 +65,7 @@ import { LangLogo } from "@ui/LangLogo";
 import "../editor.css";
 import "./CodeEditor.css";
 import { restoreViewState, trackScroll } from "./viewState";
+import { bindEditEvents } from "./editEvents";
 
 /* ----------------------------------------------------------------
    Per-doc word-wrap preference (module-level ref)
@@ -415,14 +417,17 @@ export function CodeEditor({ docId, onCursor }: Props) {
     window.addEventListener("spark:code:gotoLine", onGoto);
     window.addEventListener("spark:code:toggleComment", onToggle);
     window.addEventListener("spark:code:format", onFormat);
-    window.addEventListener("view.toggleWordWrap", onToggleWrap as EventListener);
+    window.addEventListener("spark:view:toggleWordWrap", onToggleWrap);
     return () => {
       window.removeEventListener("spark:code:gotoLine", onGoto);
       window.removeEventListener("spark:code:toggleComment", onToggle);
       window.removeEventListener("spark:code:format", onFormat);
-      window.removeEventListener("view.toggleWordWrap", onToggleWrap as EventListener);
+      window.removeEventListener("spark:view:toggleWordWrap", onToggleWrap);
     };
   }, [openGoTo, toggleCommentAction, formatAction, toggleWrapAction]);
+
+  /* -- Edit / Selection menu events -------------------------- */
+  useEffect(() => bindEditEvents(() => viewRef.current), []);
 
   if (!doc) return null;
 

@@ -11,6 +11,7 @@ vi.mock("@bridge/commands", async (importOriginal) => {
     readFile: vi.fn(async (p: string) => `text:${p}`),
     readFileBase64: vi.fn(async (p: string) => `b64:${p}`),
     recentsAdd: vi.fn(async () => []),
+    stat: vi.fn(async (p: string) => ({ path: p, isFile: true, isDir: false, size: 1, mtime: "" })),
   };
 });
 
@@ -60,6 +61,29 @@ describe("openPath", () => {
     expect(mode).toBe("animation");
     expect(mockedReadFile).toHaveBeenCalledWith("/intro.sparkanim");
     expect(doc(id).binary).toBe(false);
+  });
+
+  it("opens video and audio without reading their bytes", async () => {
+    const v = await openPath("/films/Clip.MKV");
+    const a = await openPath("/music/song.flac");
+    expect(v.mode).toBe("video");
+    expect(a.mode).toBe("audio");
+    expect(mockedReadBase64).not.toHaveBeenCalled();
+    expect(mockedReadFile).not.toHaveBeenCalled();
+    expect(doc(v.id).raw).toBe("");
+    expect(doc(v.id).binary).toBe(true);
+  });
+
+  it("rejects a missing media file instead of opening an empty player", async () => {
+    const { stat } = await import("@bridge/commands");
+    vi.mocked(stat).mockRejectedValueOnce({ kind: "NotFound", path: "/gone.mp4" });
+    await expect(openPath("/gone.mp4")).rejects.toMatchObject({ kind: "NotFound" });
+    expect(useDocs.getState().order).toHaveLength(0);
+  });
+
+  it("keeps .ts on the code surface, not the video player", async () => {
+    const { mode } = await openPath("/src/app.ts");
+    expect(mode).toBe("code");
   });
 
   it("keeps SVG on the vector surface rather than the raster one", async () => {

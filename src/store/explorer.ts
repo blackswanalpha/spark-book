@@ -21,6 +21,7 @@ import {
   unwatchPath as bridgeUnwatchPath,
 } from "@bridge/commands";
 import { on } from "@bridge/events";
+import { useDocs } from "@store/documents";
 
 enableMapSet();
 
@@ -58,7 +59,15 @@ export interface FileChangeEvent {
 export interface CreateFileResult {
   ok: boolean;
   error?: string;
+  /** The path the operation produced (create, duplicate). */
+  path?: string;
 }
+
+/** An inline input row in the tree: a new entry being named inside `dir`,
+ *  or an existing entry at `path` being renamed. */
+export type ExplorerEdit =
+  | { kind: "new-file" | "new-folder"; dir: string }
+  | { kind: "rename"; path: string };
 
 /* ---------- State ---------- */
 interface State {
@@ -74,6 +83,12 @@ interface State {
   historyIndex: number;
   /** Active cut/copy clipboard entry. `pasteInto` consumes it. */
   clipboard: ClipboardEntry | null;
+  /** The inline create/rename row, if one is open. */
+  edit: ExplorerEdit | null;
+  /** Name filter typed into the explorer; "" shows the whole tree. */
+  filter: string;
+  /** True while the folder is being listed ahead of a filter. */
+  indexing: boolean;
 }
 
 /* ---------- Actions ---------- */
@@ -83,6 +98,9 @@ export interface ClipboardEntry { op: ClipboardOp; path: string; }
 interface Actions {
   setRoot: (path: string | null) => Promise<void>;
   goUp: () => Promise<void>;
+  /** Show `path` as the explorer root without changing the project:
+   *  "move into" a folder, or jump to an ancestor from the breadcrumb. */
+  navigateTo: (path: string) => Promise<void>;
   goBack: () => Promise<void>;
   goForward: () => Promise<void>;
   canGoBack: () => boolean;
@@ -100,17 +118,28 @@ interface Actions {
   /** Move a file/folder to a fully-qualified `to` path (may be in a
    *  different parent directory than the source). */
   moveTo: (from: string, to: string) => Promise<CreateFileResult>;
-  deletePath: (path: string) => Promise<CreateFileResult>;
+  /** Move to the OS trash, or remove outright when `permanent`. */
+  deletePath: (path: string, permanent?: boolean) => Promise<CreateFileResult>;
   copyTo: (from: string, to: string) => Promise<CreateFileResult>;
+  /** Copy `path` next to itself as "name copy.ext". */
+  duplicate: (path: string) => Promise<CreateFileResult>;
+  /** Expand every ancestor of `path` under the root and select it. */
+  reveal: (path: string) => Promise<void>;
+  /** Expand every folder that shares a parent with `path` (the `*` key). */
+  expandSiblings: (path: string) => Promise<void>;
+  beginCreate: (kind: "file" | "folder", dir: string) => void;
+  beginRename: (path: string) => void;
+  cancelEdit: () => void;
+  setFilter: (q: string) => void;
   /** Mark `path` for cut or copy. The actual filesystem copy/delete
    *  happens on `pasteInto(targetDir)`. */
   setClipboard: (entry: ClipboardEntry | null) => void;
   pasteInto: (targetDir: string) => Promise<CreateFileResult>;
+  /** Move ("cut") or copy `path` into `targetDir`, keeping its name unless
+   *  a copy would collide. Shared by paste and drag-and-drop. */
+  transfer: (op: ClipboardOp, path: string, targetDir: string) => Promise<CreateFileResult>;
   openInTerminal: (cwd: string) => Promise<CreateFileResult>;
   revealInOS: (path: string) => Promise<CreateFileResult>;
-  /** Currently a thin wrapper around `renamePath` — a future PR
-   *  can layer on language-aware refactors (move symbol, etc.). */
-  refactor: (path: string, newName: string) => Promise<CreateFileResult>;
   subscribeToFileChanges: () => Promise<() => void>;
 }
 
@@ -184,9 +213,104 @@ function joinPath(parent: string, name: string): string {
   return parent + "/" + name;
 }
 
-function isUnder(child: string, ancestor: string): boolean {
-  return child === ancestor || child.startsWith(ancestor + "/") || child.startsWith(ancestor + "\\");
+/** True when `child` is `ancestor` or lies inside it. An ancestor that
+ *  already ends in a separator ("/") is matched as a plain prefix —
+ *  appending another "/" made nothing count as inside the root "/". */
+export function isUnder(child: string, ancestor: string): boolean {
+  if (child === ancestor) return true;
+  if (ancestor.endsWith("/") || ancestor.endsWith("\\")) return child.startsWith(ancestor);
+  return child.startsWith(ancestor + "/") || child.startsWith(ancestor + "\\");
 }
+
+/** Last path segment. */
+export function baseName(path: string): string {
+  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+/** Containing directory, without the normalisation `parentOf` applies. */
+export function dirName(path: string): string {
+  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return idx > 0 ? path.slice(0, idx) : "/";
+}
+
+/* Folders first, then names in natural, case-insensitive order
+   ("file2" before "file10", "Readme" beside "readme"). The host sorts
+   by raw byte order, which put every capitalised name first. */
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+export function compareNodes(a: ExplorerNode, b: ExplorerNode): number {
+  if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+  return collator.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+
+/**
+ * A readable message for a failed host call. The Tauri host rejects with
+ * `{ kind, data: { path } }` and the browser mock with `{ kind, path }`;
+ * stringifying either gave the user "[object Object]".
+ */
+export function describeError(err: unknown): string {
+  if (err == null) return "Unknown error";
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  const e = err as { kind?: string; path?: string; message?: string; data?: { path?: string; message?: string; reason?: string } };
+  const path = e.data?.path ?? e.path;
+  const name = path ? `“${baseName(path)}”` : "The item";
+  switch (e.kind) {
+    case "AlreadyExists": return `${name} already exists here.`;
+    case "NotFound": return `${name} no longer exists.`;
+    case "PermissionDenied": return `Permission denied for ${name}.`;
+    case "IsADirectory": return `${name} is a folder.`;
+    case "InvalidPath": return `Invalid path ${name}${e.data?.reason ? `: ${e.data.reason}` : ""}.`;
+    case "Internal": return e.data?.message ?? e.message ?? "Internal error";
+  }
+  return e.message ?? e.kind ?? String(err);
+}
+
+/**
+ * Why `name` cannot be used, or null when it can. `nested` allows
+ * "a/b/c.ts" (create makes the missing folders); rename does not.
+ * `siblings` are the names already in the target folder.
+ */
+export function validateName(name: string, siblings: string[], opts: { nested?: boolean; current?: string } = {}): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "A name is required.";
+  if (!opts.nested && /[/\\]/.test(trimmed)) return "A name cannot contain / or \\.";
+  const segments = trimmed.split(/[/\\]/);
+  for (const seg of segments) {
+    if (!seg) return "A path segment is empty.";
+    if (seg === "." || seg === "..") return `“${seg}” is not a valid name.`;
+    if (/[\0<>:"|?*]/.test(seg)) return `“${seg}” contains a character that is not allowed.`;
+  }
+  // Only the first segment can collide with this folder's listing; a
+  // deeper one lives in a folder that may not exist yet.
+  const first = segments[0];
+  const collides = segments.length === 1
+    ? siblings.includes(first) && first !== opts.current
+    : false;
+  if (collides) return `“${first}” already exists here.`;
+  return null;
+}
+
+/** Point every open tab at or under `from` to its new location. */
+function retargetOpenDocs(from: string, to: string) {
+  const docs = useDocs.getState();
+  for (const d of Object.values(docs.docs)) {
+    if (!d.path || !isUnder(d.path, from)) continue;
+    const next = to + d.path.slice(from.length);
+    docs.setPath(d.id, next);
+    docs.setName(d.id, baseName(next));
+  }
+}
+
+/* Folders a filter never descends into: they are rarely what the user is
+   looking for and can hold more entries than the rest of the tree. */
+const INDEX_SKIP = new Set([
+  ".git", "node_modules", "target", "dist", "build", ".next", ".cache",
+  "__pycache__", ".venv", "venv", ".idea", ".gradle",
+]);
+const INDEX_MAX_DIRS = 3000;
+/** Root the filter index was built for; reset whenever the root changes. */
+let _indexedRoot: string | null = null;
 
 /** Return the parent directory of `path`, or `null` if `path` is the root "/". */
 function parentOf(path: string): string | null {
@@ -252,6 +376,151 @@ async function nextAvailableDest(targetDir: string, name: string): Promise<strin
   return joinPath(targetDir, `${stem} copy ${Date.now()}${ext}`);
 }
 
+/** Turn a host listing into sorted tree nodes. Older hosts sent
+ *  snake_case flags, so both spellings are accepted. */
+function toNodes(dir: string, entries: unknown): ExplorerNode[] {
+  const list = (Array.isArray(entries) ? entries : []) as Array<{
+    name: string; isDir?: boolean; is_dir?: boolean; isFile?: boolean; is_file?: boolean;
+  }>;
+  return list.map((e) => {
+    const isDir = Boolean(e.isDir ?? e.is_dir);
+    const isFileRaw = e.isFile ?? e.is_file;
+    const isFile = isFileRaw !== undefined ? Boolean(isFileRaw) : !isDir;
+    return { name: e.name, path: joinPath(dir, e.name), isDir, isFile };
+  }).sort(compareNodes);
+}
+
+/**
+ * Create a file or folder named `name` inside `parentDir`. A name with
+ * separators ("src/lib/util.ts") creates the missing folders first, the
+ * way VS Code's explorer does. Each level is created on its own so the
+ * listings refreshed afterwards include every new folder.
+ */
+async function createEntry(
+  get: () => State & Actions,
+  set: (p: Partial<State>) => void,
+  parentDir: string,
+  name: string,
+  kind: "file" | "folder",
+): Promise<CreateFileResult> {
+  const segments = name.trim().split(/[/\\]/).filter(Boolean);
+  if (segments.length === 0) return { ok: false, error: "A name is required." };
+  const leaf = segments.pop()!;
+  const touched: string[] = [parentDir];
+  let dir = parentDir;
+  try {
+    for (const seg of segments) {
+      dir = joinPath(dir, seg);
+      await bridgeMkdir(dir);
+      touched.push(dir);
+    }
+    const fullPath = joinPath(dir, leaf);
+    if (kind === "file") await bridgeCreateFile(fullPath, "");
+    else await bridgeMkdir(fullPath);
+    // Re-read every listing the create touched, then show the result.
+    for (const d of touched) await get().loadChildren(d);
+    const expanded = new Set(get().expanded);
+    for (const d of touched) expanded.add(d);
+    set({ expanded, selectedPath: fullPath });
+    return { ok: true, path: fullPath };
+  } catch (err) {
+    // A partial nested create still made folders; show what exists.
+    for (const d of touched) void get().loadChildren(d);
+    return { ok: false, error: describeError(err) };
+  }
+}
+
+/**
+ * List the folder breadth-first so a filter can match files in folders
+ * the user has not opened. Bounded by INDEX_MAX_DIRS and INDEX_SKIP, and
+ * written in batches so the tree re-renders a few times, not per folder.
+ * Abandoned as soon as the root changes.
+ */
+async function indexTree(get: () => State & Actions, set: (p: Partial<State>) => void, root: string) {
+  const gen = _loadGen;
+  set({ indexing: true });
+  const queue: string[] = [root];
+  const pending = new Map<string, ExplorerNode[]>();
+  let visited = 0;
+  const flush = () => {
+    if (pending.size === 0 || gen !== _loadGen) return;
+    const children = new Map(get().children);
+    for (const [k, v] of pending) children.set(k, v);
+    pending.clear();
+    set({ children });
+  };
+  while (queue.length && visited < INDEX_MAX_DIRS) {
+    if (gen !== _loadGen) return;
+    const dir = queue.shift()!;
+    visited++;
+    let nodes = get().children.get(dir);
+    if (!nodes) {
+      try {
+        nodes = toNodes(dir, await readDir(dir));
+        pending.set(dir, nodes);
+      } catch {
+        continue;
+      }
+    }
+    for (const n of nodes) {
+      if (n.isDir && !INDEX_SKIP.has(n.name) && !n.name.startsWith(".")) queue.push(n.path);
+    }
+    if (pending.size >= 40) flush();
+  }
+  flush();
+  if (gen === _loadGen) set({ indexing: false });
+}
+
+/**
+ * Re-root the tree at `target` while navigating (up, into, back, forward).
+ * Listings and expansion already known under `target` are kept, so going
+ * back does not re-read the disk. Moving to an ancestor also opens the
+ * folders down to where the user came from, so they can see it.
+ * `history` is "push" for a new step, or the index being moved to.
+ */
+async function moveRoot(
+  get: () => State & Actions,
+  set: (p: Partial<State>) => void,
+  target: string,
+  history: "push" | number,
+) {
+  _loadGen++;
+  _indexedRoot = null;
+  const previous = get().root;
+  const keptExpanded = new Set<string>([target]);
+  for (const e of get().expanded) {
+    if (isUnder(e, target)) keptExpanded.add(e);
+  }
+  if (previous && previous !== target && isUnder(previous, target)) {
+    for (let cur = previous; cur !== target && isUnder(cur, target); cur = dirName(cur)) {
+      keptExpanded.add(cur);
+      if (cur === "/") break;
+    }
+  }
+  const keptChildren = new Map<string, ExplorerNode[]>();
+  for (const [k, v] of get().children) {
+    if (isUnder(k, target)) keptChildren.set(k, v);
+  }
+  set({
+    root: target,
+    explicitRoot: true,
+    expanded: keptExpanded,
+    children: keptChildren,
+    loading: new Set<string>(),
+    errors: new Map<string, string>(),
+    // Keep the selection when it is still inside the new root — the
+    // user navigated, they did not deselect.
+    selectedPath: keepSelection(get().selectedPath, target),
+    edit: null,
+    indexing: false,
+    ...(history === "push" ? {} : { historyIndex: history }),
+  });
+  if (history === "push") pushHistory(get, set, target);
+  void retargetWatch(target);
+  window.dispatchEvent(new CustomEvent("spark:explorer:root-changed", { detail: { root: target } }));
+  await get().loadChildren(target);
+}
+
 /* ---------- Store ---------- */
 export const useExplorer = create<State & Actions>((set, get) => ({
   root: null,
@@ -265,9 +534,13 @@ export const useExplorer = create<State & Actions>((set, get) => ({
   history: [],
   historyIndex: -1,
   clipboard: null,
+  edit: null,
+  filter: "",
+  indexing: false,
 
   setRoot: async (path) => {
     _loadGen++;
+    _indexedRoot = null;
     if (path === null) {
       set({
         root: null,
@@ -279,6 +552,9 @@ export const useExplorer = create<State & Actions>((set, get) => ({
         selectedPath: null,
         history: [],
         historyIndex: -1,
+        edit: null,
+        filter: "",
+        indexing: false,
       });
       void retargetWatch(null);
       window.dispatchEvent(new CustomEvent("spark:explorer:root-changed", { detail: { root: null } }));
@@ -294,104 +570,38 @@ export const useExplorer = create<State & Actions>((set, get) => ({
       loading: new Set<string>(),
       errors: new Map<string, string>(),
       selectedPath: null,
+      edit: null,
+      filter: isSameRoot ? get().filter : "",
+      indexing: false,
     });
-    pushHistory(get, set as any, normalized);
+    pushHistory(get, set, normalized);
     if (!isSameRoot) void retargetWatch(normalized);
     window.dispatchEvent(new CustomEvent("spark:explorer:root-changed", { detail: { root: normalized } }));
     await get().loadChildren(normalized);
   },
 
   goUp: async () => {
-    _loadGen++;
     const current = get().root;
-    if (!current) return;
-    const parent = parentOf(current);
-    if (!parent) return;
-    const prevExpanded = get().expanded;
-    const prevChildren = get().children;
-    const keptExpanded = new Set<string>([parent, current]);
-    for (const e of prevExpanded) {
-      if (e !== current && isUnder(e, parent)) keptExpanded.add(e);
-    }
-    const keptChildren = new Map<string, ExplorerNode[]>();
-    for (const [k, v] of prevChildren) {
-      if (isUnder(k, parent)) keptChildren.set(k, v);
-    }
-    set({
-      root: parent,
-      explicitRoot: true,
-      expanded: keptExpanded,
-      children: keptChildren,
-      loading: new Set<string>(),
-      errors: new Map<string, string>(),
-      // Keep the selection when it is still inside the new root — the
-      // user navigated up, they did not deselect.
-      selectedPath: keepSelection(get().selectedPath, parent),
-    });
-    pushHistory(get, set as any, parent);
-    void retargetWatch(parent);
-    window.dispatchEvent(new CustomEvent("spark:explorer:root-changed", { detail: { root: parent } }));
-    await get().loadChildren(parent);
+    const parent = current ? parentOf(current) : null;
+    if (parent) await moveRoot(get, set, parent, "push");
+  },
+
+  navigateTo: async (path) => {
+    const current = get().root;
+    const target = normalizeRoot(path);
+    if (current && target !== current) await moveRoot(get, set, target, "push");
   },
 
   goBack: async () => {
     const { history, historyIndex } = get();
     if (historyIndex <= 0) return;
-    const target = history[historyIndex - 1];
-    _loadGen++;
-    const prevExpanded = get().expanded;
-    const prevChildren = get().children;
-    const keptExpanded = new Set<string>([target]);
-    for (const e of prevExpanded) {
-      if (isUnder(e, target)) keptExpanded.add(e);
-    }
-    const keptChildren = new Map<string, ExplorerNode[]>();
-    for (const [k, v] of prevChildren) {
-      if (isUnder(k, target)) keptChildren.set(k, v);
-    }
-    set({
-      root: target,
-      explicitRoot: true,
-      historyIndex: historyIndex - 1,
-      expanded: keptExpanded,
-      children: keptChildren,
-      loading: new Set<string>(),
-      errors: new Map<string, string>(),
-      selectedPath: keepSelection(get().selectedPath, target),
-    });
-    void retargetWatch(target);
-    window.dispatchEvent(new CustomEvent("spark:explorer:root-changed", { detail: { root: target } }));
-    await get().loadChildren(target);
+    await moveRoot(get, set, history[historyIndex - 1], historyIndex - 1);
   },
 
   goForward: async () => {
     const { history, historyIndex } = get();
     if (historyIndex < 0 || historyIndex >= history.length - 1) return;
-    const target = history[historyIndex + 1];
-    _loadGen++;
-    const prevExpanded = get().expanded;
-    const prevChildren = get().children;
-    const keptExpanded = new Set<string>([target]);
-    for (const e of prevExpanded) {
-      if (isUnder(e, target)) keptExpanded.add(e);
-    }
-    const keptChildren = new Map<string, ExplorerNode[]>();
-    for (const [k, v] of prevChildren) {
-      if (isUnder(k, target)) keptChildren.set(k, v);
-    }
-    set({
-      root: target,
-      explicitRoot: true,
-      historyIndex: historyIndex + 1,
-      expanded: keptExpanded,
-      children: keptChildren,
-      loading: new Set<string>(),
-      errors: new Map<string, string>(),
-      selectedPath: keepSelection(get().selectedPath, target),
-    });
-    void retargetWatch(target);
-    window.dispatchEvent(new CustomEvent("spark:explorer:root-changed", { detail: { root: target } }));
-    await get().loadChildren(target);
+    await moveRoot(get, set, history[historyIndex + 1], historyIndex + 1);
   },
 
   canGoBack: () => get().historyIndex > 0,
@@ -436,23 +646,13 @@ export const useExplorer = create<State & Actions>((set, get) => ({
         clearLoading(get, set, path);
         return;
       }
-      const nodes: ExplorerNode[] = (entries ?? []).map((e: any) => {
-        const isDir = Boolean(e.isDir ?? e.is_dir);
-        const isFileRaw = e.isFile ?? e.is_file;
-        const isFile = isFileRaw !== undefined ? Boolean(isFileRaw) : !isDir;
-        return {
-          name: e.name,
-          path: joinPath(path, e.name),
-          isDir,
-          isFile,
-        };
-      });
+      const nodes = toNodes(path, entries);
       const children = new Map(get().children);
       const loadingAfter = new Set(get().loading);
       children.set(path, nodes);
       loadingAfter.delete(path);
       set({ children, loading: loadingAfter });
-    } catch (err: any) {
+    } catch (err) {
       if (myGen !== _loadGen) {
         clearLoading(get, set, path);
         return;
@@ -460,7 +660,7 @@ export const useExplorer = create<State & Actions>((set, get) => ({
       const loadingAfter = new Set(get().loading);
       const errorsAfter = new Map(get().errors);
       loadingAfter.delete(path);
-      errorsAfter.set(path, String(err?.message ?? err));
+      errorsAfter.set(path, describeError(err));
       set({ loading: loadingAfter, errors: errorsAfter });
     }
   },
@@ -497,73 +697,9 @@ export const useExplorer = create<State & Actions>((set, get) => ({
     set({ selectedPath: path });
   },
 
-  createFile: async (parentDir, name) => {
-    const fullPath = joinPath(parentDir, name);
-    try {
-      await bridgeCreateFile(fullPath, "");
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
-    }
-    const cached = get().children.get(parentDir);
-    if (cached) {
-      if (!cached.some((n) => n.name === name)) {
-        const children = new Map(get().children);
-        children.set(parentDir, [
-          ...cached,
-          { name, path: fullPath, isDir: false, isFile: true },
-        ]);
-        // keep sorted: dirs first, then alpha
-        const sorted = children.get(parentDir)!.slice().sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        children.set(parentDir, sorted);
-        // ensure parent is expanded so new file is visible immediately
-        const expanded = new Set(get().expanded);
-        expanded.add(parentDir);
-        set({ children, expanded });
-      }
-    } else {
-      void get().refresh(parentDir);
-    }
-    return { ok: true };
-  },
+  createFile: (parentDir, name) => createEntry(get, set, parentDir, name, "file"),
 
-  createFolder: async (parentDir, name) => {
-    const fullPath = joinPath(parentDir, name);
-    try {
-      await bridgeMkdir(fullPath);
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
-    }
-    const cached = get().children.get(parentDir);
-    if (cached) {
-      if (!cached.some((n) => n.name === name)) {
-        const children = new Map(get().children);
-        children.set(parentDir, [
-          ...cached,
-          { name, path: fullPath, isDir: true, isFile: false },
-        ]);
-        const sorted = children.get(parentDir)!.slice().sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        children.set(parentDir, sorted);
-        const expanded = new Set(get().expanded);
-        expanded.add(parentDir);
-        set({ children, expanded });
-      }
-    } else {
-      void get().refresh(parentDir);
-    }
-    // also ensure newly created folder is cached as empty
-    if (!get().children.has(fullPath)) {
-      const children = new Map(get().children);
-      children.set(fullPath, []);
-      set({ children });
-    }
-    return { ok: true };
-  },
+  createFolder: (parentDir, name) => createEntry(get, set, parentDir, name, "folder"),
 
   renamePath: async (path, newName) => {
     if (!newName || newName.includes("/") || newName.includes("\\")) {
@@ -575,8 +711,8 @@ export const useExplorer = create<State & Actions>((set, get) => ({
     if (to === path) return { ok: true };
     try {
       await bridgeRename(path, to);
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
     }
     // Eagerly update cache: rewrite children's name/path for the renamed entry,
     // and drop any cached children for the old path (it's gone).
@@ -587,10 +723,7 @@ export const useExplorer = create<State & Actions>((set, get) => ({
       const replaced = siblings.map((n) =>
         n.path === path ? { ...n, name: newName, path: to } : n,
       );
-      const sorted = replaced.slice().sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+      const sorted = replaced.slice().sort(compareNodes);
       children.set(parent, sorted);
     }
     // 2) cached children of the entry itself (if it was a dir): remap keys
@@ -616,15 +749,16 @@ export const useExplorer = create<State & Actions>((set, get) => ({
     const sel = get().selectedPath;
     const selected = sel === path ? to : (sel && sel.startsWith(path + "/") ? to + sel.slice(path.length) : sel);
     set({ children: remapped, expanded, selectedPath: selected });
-    return { ok: true };
+    retargetOpenDocs(path, to);
+    return { ok: true, path: to };
   },
 
   moveTo: async (from, to) => {
     if (from === to) return { ok: true };
     try {
       await bridgeRename(from, to);
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
     }
     const srcIdx = Math.max(from.lastIndexOf("/"), from.lastIndexOf("\\"));
     const dstIdx = Math.max(to.lastIndexOf("/"), to.lastIndexOf("\\"));
@@ -644,10 +778,7 @@ export const useExplorer = create<State & Actions>((set, get) => ({
       const isDir = srcEntry?.isDir ?? false;
       const isFile = srcEntry?.isFile ?? !isDir;
       const next = [...destSiblings, { name: newName, path: to, isDir, isFile }];
-      next.sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+      next.sort(compareNodes);
       children.set(dstParent, next);
     }
     // 3) remap cached children keys
@@ -670,14 +801,15 @@ export const useExplorer = create<State & Actions>((set, get) => ({
     const sel = get().selectedPath;
     const selected = sel === from ? to : (sel && sel.startsWith(from + "/") ? to + sel.slice(from.length) : sel);
     set({ children: remapped, expanded, selectedPath: selected });
-    return { ok: true };
+    retargetOpenDocs(from, to);
+    return { ok: true, path: to };
   },
 
-  deletePath: async (path) => {
+  deletePath: async (path, permanent = false) => {
     try {
-      await bridgeDelete(path);
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
+      await bridgeDelete(path, permanent);
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
     }
     const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
     const parent = idx > 0 ? path.slice(0, idx) : "/";
@@ -708,8 +840,8 @@ export const useExplorer = create<State & Actions>((set, get) => ({
   copyTo: async (from, to) => {
     try {
       await bridgeCopy(from, to);
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
     }
     const idx = Math.max(to.lastIndexOf("/"), to.lastIndexOf("\\"));
     const destParent = idx > 0 ? to.slice(0, idx) : "/";
@@ -731,10 +863,7 @@ export const useExplorer = create<State & Actions>((set, get) => ({
       const isFile = srcEntry?.isFile ?? !isDir;
       if (!siblings.some((n) => n.path === to)) {
         const next = [...siblings, { name: newName, path: to, isDir, isFile }];
-        next.sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
+        next.sort(compareNodes);
         children.set(destParent, next);
         const expanded = new Set(get().expanded);
         expanded.add(destParent);
@@ -753,44 +882,34 @@ export const useExplorer = create<State & Actions>((set, get) => ({
   pasteInto: async (targetDir) => {
     const clip = get().clipboard;
     if (!clip) return { ok: false, error: "Clipboard is empty" };
-    const idx = Math.max(clip.path.lastIndexOf("/"), clip.path.lastIndexOf("\\"));
-    const name = idx >= 0 ? clip.path.slice(idx + 1) : clip.path;
-    const currentParent = idx > 0 ? clip.path.slice(0, idx) : "/";
-    // No-op cut into the same directory.
-    if (clip.op === "cut" && currentParent === targetDir) {
-      set({ clipboard: null });
-      return { ok: true };
-    }
-    const to = joinPath(targetDir, name);
-    if (to === clip.path) {
-      // Same path == no-op for cut; for copy we still want a duplicate.
-      if (clip.op === "cut") set({ clipboard: null });
-      else {
-        const dest = await nextAvailableDest(targetDir, name);
-        return get().copyTo(clip.path, dest);
-      }
-      return { ok: true };
-    }
-    let res: CreateFileResult;
-    if (clip.op === "cut") {
-      res = await get().moveTo(clip.path, to);
-      if (res.ok) set({ clipboard: null });
-    } else {
-      // Keep the original name when the destination is free; only fall
-      // back to "name copy" on a real collision. Always suffixing meant
-      // pasting into an empty folder produced "README copy.md".
-      const dest = (await pathExists(to)) ? await nextAvailableDest(targetDir, name) : to;
-      res = await get().copyTo(clip.path, dest);
-    }
+    const res = await get().transfer(clip.op, clip.path, targetDir);
+    if (res.ok && clip.op === "cut") set({ clipboard: null });
     return res;
+  },
+
+  transfer: async (op, path, targetDir) => {
+    const name = baseName(path);
+    if (op === "cut" && isUnder(targetDir, path)) {
+      return { ok: false, error: `Cannot move “${name}” into itself.` };
+    }
+    // No-op cut into the same directory.
+    if (op === "cut" && dirName(path) === targetDir) return { ok: true, path };
+    const to = joinPath(targetDir, name);
+    if (op === "cut") return get().moveTo(path, to);
+    // Keep the original name when the destination is free; only fall
+    // back to "name copy" on a real collision. Always suffixing meant
+    // pasting into an empty folder produced "README copy.md".
+    const dest = to === path || (await pathExists(to)) ? await nextAvailableDest(targetDir, name) : to;
+    const res = await get().copyTo(path, dest);
+    return res.ok ? { ok: true, path: dest } : res;
   },
 
   openInTerminal: async (cwd) => {
     try {
       await bridgeOpenInTerminal(cwd);
       return { ok: true };
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
     }
   },
 
@@ -798,15 +917,70 @@ export const useExplorer = create<State & Actions>((set, get) => ({
     try {
       await bridgeRevealInOS(path);
       return { ok: true };
-    } catch (err: any) {
-      return { ok: false, error: String(err?.message ?? err) };
+    } catch (err) {
+      return { ok: false, error: describeError(err) };
     }
   },
 
-  refactor: async (path, newName) => {
-    // For now, refactor == rename. A future PR can layer language-aware
-    // refactors on top (rename symbol, etc.).
-    return get().renamePath(path, newName);
+  duplicate: async (path) => {
+    const dest = await nextAvailableDest(dirName(path), baseName(path));
+    const res = await get().copyTo(path, dest);
+    if (res.ok) set({ selectedPath: dest });
+    return res.ok ? { ok: true, path: dest } : res;
+  },
+
+  reveal: async (path) => {
+    const root = get().root;
+    if (!root || path === root || !isUnder(path, root)) return;
+    const chain: string[] = [];
+    for (let cur = dirName(path); cur !== root && isUnder(cur, root); cur = dirName(cur)) {
+      chain.unshift(cur);
+      if (cur === "/") break;
+    }
+    const dirs = [root, ...chain];
+    const expanded = get().expanded;
+    if (dirs.some((d) => !expanded.has(d))) {
+      const next = new Set(expanded);
+      for (const d of dirs) next.add(d);
+      set({ expanded: next });
+    }
+    for (const d of dirs) {
+      if (!get().children.has(d)) await get().loadChildren(d);
+    }
+    if (get().root === root) set({ selectedPath: path });
+  },
+
+  expandSiblings: async (path) => {
+    const siblings = get().children.get(dirName(path)) ?? [];
+    const dirs = siblings.filter((n) => n.isDir && (get().showHidden || !n.name.startsWith(".")));
+    const next = new Set(get().expanded);
+    for (const d of dirs) next.add(d.path);
+    set({ expanded: next });
+    await Promise.all(dirs.filter((d) => !get().children.has(d.path)).map((d) => get().loadChildren(d.path)));
+  },
+
+  beginCreate: (kind, dir) => {
+    const expanded = new Set(get().expanded);
+    expanded.add(dir);
+    set({ edit: { kind: kind === "file" ? "new-file" : "new-folder", dir }, expanded });
+    if (!get().children.has(dir)) void get().loadChildren(dir);
+  },
+
+  beginRename: (path) => {
+    if (path === get().root) return;
+    set({ edit: { kind: "rename", path }, selectedPath: path });
+  },
+
+  cancelEdit: () => {
+    if (get().edit) set({ edit: null });
+  },
+
+  setFilter: (q) => {
+    set({ filter: q });
+    const root = get().root;
+    if (!q.trim() || !root || _indexedRoot === root) return;
+    _indexedRoot = root;
+    void indexTree(get, set, root);
   },
 
   subscribeToFileChanges: async () => {
