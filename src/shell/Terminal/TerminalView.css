@@ -36,6 +36,14 @@
   -webkit-user-select: none;
 }
 
+/* The global :focus-visible rule gives a focused element z-index 1. The
+   grid is focused whenever the terminal is in use, and at z-index 1 it
+   painted over its own overlays: "jump to latest" and the scrollbar
+   could not be clicked while the keyboard was on the terminal. */
+.tv__screen:focus-visible {
+  z-index: auto;
+}
+
 /* Highlight for the grid selection. It sits ON TOP of the text rather
    than behind it, because a cell can carry its own background and an
    underlay would simply not be visible there. The token is translucent,
@@ -106,6 +114,7 @@
    history to reach. */
 .tv__scrollbar {
   position: absolute;
+  z-index: 2;
   top: 2px;
   right: 1px;
   bottom: 2px;
@@ -140,6 +149,7 @@
 
 .tv__scrollback {
   position: absolute;
+  z-index: 2;
   right: 20px;
   bottom: 12px;
   display: inline-flex;
@@ -173,4 +183,89 @@
 .tv__overlay--error {
   border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
   color: var(--danger);
+}
+
+/* File drag over the terminal: the drop types the paths. */
+.tv__drop {
+  position: absolute;
+  inset: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent, var(--term-cursor));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--term-bg) 70%, transparent);
+  color: var(--term-fg);
+  font-size: 13px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Find in terminal. */
+.tv__match {
+  position: absolute;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+.tv__match.is-current {
+  background: color-mix(in srgb, #f5c542 60%, transparent);
+  outline: 1px solid #f5c542;
+}
+
+.tv__find {
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--surface-2, #1f242c);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  z-index: 4;
+  font-size: 12px;
+  color: var(--text, var(--term-fg));
+}
+.tv__findInput {
+  width: 180px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: var(--bg, var(--term-bg));
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+.tv__findInput:focus {
+  border-color: var(--accent);
+}
+.tv__findCount {
+  min-width: 56px;
+  text-align: right;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.tv__findBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.tv__findBtn:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.tv__findBtn.is-on {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
 }

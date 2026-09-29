@@ -33,6 +33,8 @@ export interface PtySpan {
   fg?: string;
   bg?: string;
   bold?: boolean;
+  /** SGR 2 (faint). */
+  dim?: boolean;
   italic?: boolean;
   underline?: boolean;
   inverse?: boolean;
@@ -64,7 +66,23 @@ export interface PtyFrame {
   alternateScreen: boolean;
   mouseMode: PtyMouseMode;
   mouseEncoding: PtyMouseEncoding;
+  /** DEC 1004: report focus changes as `CSI I` / `CSI O`. */
+  focusReporting?: boolean;
+  /** Kitty keyboard flags in force; bit 0 = disambiguate escape codes. */
+  kittyFlags?: number;
   seq: number;
+}
+
+/** An OSC 52 clipboard write from the program. */
+export interface PtyClipboard {
+  id: string;
+  /** Base64 of the text to copy. */
+  data: string;
+}
+
+/** A bell, or a notification OSC — the program wants attention. */
+export interface PtyBell {
+  id: string;
 }
 
 export interface PtyExit {
@@ -129,6 +147,28 @@ export const ptyAdopt = (id: string) => host<PtySessionInfo>("pty_adopt", { id }
 export const ptyList = () => host<PtySessionInfo[]>("pty_list");
 export const ptyRootSupport = () => host<RootSupport>("pty_root_support");
 export const ptyDefaultShell = () => host<string>("pty_default_shell");
+/** One hit of `ptySearch`. `line` counts from the oldest line of history. */
+export interface PtyMatch {
+  line: number;
+  col: number;
+  /** Width in cells. */
+  len: number;
+}
+
+export interface PtySearchResult {
+  matches: PtyMatch[];
+  /** History length the line numbers count against. */
+  scrollbackMax: number;
+  truncated: boolean;
+}
+
+/** Search the whole buffer — scrollback and screen — for plain text. */
+export const ptySearch = (id: string, query: string, caseSensitive = false) =>
+  host<PtySearchResult>("pty_search", { id, query, caseSensitive });
+
+/** Tell the host the theme's terminal colours, for OSC 10/11/12 queries. */
+export const ptySetPalette = (fg: string, bg: string, cursor?: string) =>
+  host<void>("pty_set_palette", { fg, bg, cursor });
 
 /**
  * Scroll the viewport into scrollback. Positive `delta` = older output.
@@ -230,6 +270,8 @@ class Fanout<T extends { id: string }> {
 
 const frames = new Fanout<PtyFrame>(["pty://frame", "pty://cursor"]);
 const exits = new Fanout<PtyExit>(["pty://exit"]);
+const clipboards = new Fanout<PtyClipboard>(["pty://clipboard"]);
+const bells = new Fanout<PtyBell>(["pty://bell"]);
 
 /**
  * Frames for one session. `pty://cursor` delivers the cheaper cursor-only
@@ -244,6 +286,25 @@ export const onPtyFrame = (id: string, handler: (f: PtyFrame) => void): Promise<
 
 export const onPtyExit = (id: string, handler: (e: PtyExit) => void): Promise<UnlistenFn> =>
   exits.add(id, handler);
+
+export const onPtyClipboard = (
+  id: string,
+  handler: (e: PtyClipboard) => void,
+): Promise<UnlistenFn> => clipboards.add(id, handler);
+
+export const onPtyBell = (id: string, handler: (e: PtyBell) => void): Promise<UnlistenFn> =>
+  bells.add(id, handler);
+
+/** Decode an OSC 52 payload. Invalid base64 decodes to "". */
+export function decodeClipboard(data: string): string {
+  try {
+    const bin = atob(data);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return "";
+  }
+}
 
 /* ---------- Key encoding ----------
 
@@ -281,6 +342,92 @@ const ARROWS: Record<string, string> = {
 export interface KeyContext {
   /** DECCKM — from the latest frame. */
   applicationCursor: boolean;
+  /** Kitty keyboard flags from the latest frame; absent means legacy. */
+  kittyFlags?: number;
+}
+
+/**
+ * The bytes for Ctrl+V, for when the surface forwards it instead of
+ * pasting.
+ *
+ * Ctrl+V is the surface's paste. But the clipboard can hold something that
+ * is not text — a screenshot — and there is nothing to paste then. The
+ * program in the terminal may know what to do with it: Claude Code, like
+ * other TUIs, reads an image straight off the system clipboard when it
+ * sees Ctrl+V. Swallowing the key there is why pasting an image did
+ * nothing, so it is forwarded as the key a plain terminal would send.
+ */
+export function ctrlVBytes(kittyFlags = 0): string {
+  return kittyFlags & 1 ? `${CSI}118;5u` : "\x16";
+}
+
+/** US-layout unshifted keys, for a shifted symbol pressed with Ctrl/Alt. */
+const UNSHIFTED_BY_CODE: Record<string, string> = {
+  Digit0: "0",
+  Digit1: "1",
+  Digit2: "2",
+  Digit3: "3",
+  Digit4: "4",
+  Digit5: "5",
+  Digit6: "6",
+  Digit7: "7",
+  Digit8: "8",
+  Digit9: "9",
+  Minus: "-",
+  Equal: "=",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Backslash: "\\",
+  Semicolon: ";",
+  Quote: "'",
+  Backquote: "`",
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
+};
+
+/** The kitty key number for a text key: its unshifted codepoint. */
+function kittyKeyCode(e: Pick<KeyboardEvent, "shiftKey" | "code">, key: string): number | null {
+  const chars = [...key];
+  if (chars.length !== 1) return null;
+  const lower = key.toLowerCase();
+  // A letter in any script: lower case is the unshifted key.
+  if (lower !== key.toUpperCase()) return lower.codePointAt(0) ?? null;
+  const unshifted = e.shiftKey ? UNSHIFTED_BY_CODE[e.code] : undefined;
+  return (unshifted ?? key).codePointAt(0) ?? null;
+}
+
+/**
+ * Encode a press under the kitty keyboard protocol's "disambiguate escape
+ * codes" flag, or return `undefined` for a key whose legacy encoding is
+ * already unambiguous (plain text, arrows, function keys).
+ *
+ * This is what lets a program tell Shift+Enter from Enter and Esc from
+ * the start of a sequence. Programs opt in — Claude Code asks with
+ * `CSI ? u` and pushes the flag — so a shell that never does keeps the
+ * legacy bytes.
+ */
+function encodeKitty(e: KeyboardEvent, key: string): string | null | undefined {
+  const mods = modifier(e);
+  switch (key) {
+    case "Escape":
+      return mods > 1 ? `${CSI}27;${mods}u` : `${CSI}27u`;
+    // Unmodified Enter/Tab/Backspace stay legacy, so `reset` can still be
+    // typed after a program that set the mode crashed without clearing it.
+    case "Enter":
+      return mods > 1 ? `${CSI}13;${mods}u` : "\r";
+    case "Tab":
+      return mods > 1 ? `${CSI}9;${mods}u` : "\t";
+    case "Backspace":
+      return mods > 1 ? `${CSI}127;${mods}u` : "\x7f";
+    default:
+      break;
+  }
+  if (!e.ctrlKey && !e.altKey) return undefined;
+  if (e.getModifierState?.("AltGraph")) return undefined;
+  const code = kittyKeyCode(e, key);
+  if (code === null) return undefined;
+  return `${CSI}${code};${mods}u`;
 }
 
 /** xterm's modifier parameter: 1 + shift(1) + alt(2) + ctrl(4). */
@@ -360,6 +507,11 @@ export function encodeKey(e: KeyboardEvent, ctx: KeyContext): string | null {
 
   // Clipboard bindings are the surface's, not the shell's.
   if (clipboardIntent(e)) return null;
+
+  if ((ctx.kittyFlags ?? 0) & 1) {
+    const kitty = encodeKitty(e, key);
+    if (kitty !== undefined) return kitty;
+  }
 
   const arrow = ARROWS[key];
   if (arrow) {

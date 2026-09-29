@@ -73,6 +73,8 @@ export const openInTerminal = (cwd: string) => call<void>("open_in_terminal", { 
 export const revealInOS = (path: string) => call<void>("reveal_in_folder", { path });
 /** Open a file with the OS default application. */
 export const openWithOS = (path: string) => call<void>("open_with_os", { path });
+/** Open an http(s) link in the default browser. The host refuses anything else. */
+export const openUrl = (url: string) => call<void>("open_url", { url });
 /** Add one file to the asset-protocol scope so the media player can stream
     it with range requests. The scope starts empty; this is the only way in. */
 export const mediaAllow = (path: string) => call<void>("media_allow", { path });

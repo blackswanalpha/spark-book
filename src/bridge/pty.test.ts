@@ -7,6 +7,8 @@ vi.mock("@bridge/commands", () => ({ isTauri: false }));
 
 import {
   clipboardIntent,
+  ctrlVBytes,
+  decodeClipboard,
   encodeKey,
   encodeMouseButton,
   encodePaste,
@@ -259,5 +261,54 @@ describe("encodeMouseButton", () => {
     // the program's mouse parser.
     const report = encodeMouseButton(at({ col: 400, row: 400 }), "default");
     expect(report).toHaveLength(6);
+  });
+});
+
+describe("encodeKey — kitty keyboard protocol (disambiguate)", () => {
+  const KITTY: KeyContext = { applicationCursor: false, kittyFlags: 1 };
+
+  it("tells Shift+Enter from Enter, which is what Claude Code's newline needs", () => {
+    expect(encodeKey(key({ key: "Enter" }), KITTY)).toBe("\r");
+    expect(encodeKey(key({ key: "Enter", shiftKey: true }), KITTY)).toBe("\x1b[13;2u");
+    expect(encodeKey(key({ key: "Enter", ctrlKey: true }), KITTY)).toBe("\x1b[13;5u");
+    // Without the flag nothing changes.
+    expect(encodeKey(key({ key: "Enter", shiftKey: true }), NORMAL)).toBe("\r");
+  });
+
+  it("reports Esc and control chords as CSI u", () => {
+    expect(encodeKey(key({ key: "Escape" }), KITTY)).toBe("\x1b[27u");
+    expect(encodeKey(key({ key: "c", ctrlKey: true }), KITTY)).toBe("\x1b[99;5u");
+    expect(encodeKey(key({ key: "A", ctrlKey: true, shiftKey: true, code: "KeyA" }), KITTY)).toBe(
+      "\x1b[97;6u",
+    );
+    expect(encodeKey(key({ key: "x", altKey: true }), KITTY)).toBe("\x1b[120;3u");
+    expect(encodeKey(key({ key: "!", altKey: true, shiftKey: true, code: "Digit1" }), KITTY)).toBe(
+      "\x1b[49;4u",
+    );
+    expect(encodeKey(key({ key: "Tab", shiftKey: true }), KITTY)).toBe("\x1b[9;2u");
+  });
+
+  it("leaves text and navigation keys in their legacy form", () => {
+    expect(encodeKey(key({ key: "a" }), KITTY)).toBe("a");
+    expect(encodeKey(key({ key: "A", shiftKey: true }), KITTY)).toBe("A");
+    expect(encodeKey(key({ key: "ArrowUp" }), KITTY)).toBe("\x1b[A");
+    expect(encodeKey(key({ key: "ArrowUp", ctrlKey: true }), KITTY)).toBe("\x1b[1;5A");
+    expect(encodeKey(key({ key: "Backspace" }), KITTY)).toBe("\x7f");
+  });
+});
+
+describe("ctrlVBytes", () => {
+  it("forwards Ctrl+V in whichever encoding the program asked for", () => {
+    expect(ctrlVBytes()).toBe("\x16");
+    expect(ctrlVBytes(0)).toBe("\x16");
+    expect(ctrlVBytes(1)).toBe("\x1b[118;5u");
+  });
+});
+
+describe("decodeClipboard", () => {
+  it("decodes OSC 52 base64 as UTF-8", () => {
+    expect(decodeClipboard("aGVsbG8=")).toBe("hello");
+    expect(decodeClipboard(btoa(String.fromCharCode(...new TextEncoder().encode("é→"))))).toBe("é→");
+    expect(decodeClipboard("%%%")).toBe("");
   });
 });

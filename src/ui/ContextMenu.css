@@ -1,5 +1,5 @@
 .ctx-menu {
-  z-index: var(--z-menu);
+  z-index: var(--z-popover);
   min-width: 220px;
   max-width: 320px;
   background: var(--surface-1);

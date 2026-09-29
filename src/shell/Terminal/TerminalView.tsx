@@ -17,11 +17,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   clipboardIntent,
+  ctrlVBytes,
+  decodeClipboard,
   encodeArrow,
   encodeKey,
   encodeMouseButton,
   encodePaste,
   encodeWheelMouse,
+  onPtyBell,
+  onPtyClipboard,
   onPtyExit,
   onPtyFrame,
   ptyAdopt,
@@ -30,6 +34,8 @@ import {
   ptyRefresh,
   ptyResize,
   ptyScroll,
+  ptySearch,
+  ptySetPalette,
   ptySpawn,
   ptyWrite,
   PtyUnavailable,
@@ -37,11 +43,16 @@ import {
   type PtyMouseEncoding,
   type PtyMouseMode,
   type PtyPrivilege,
+  type PtySearchResult,
   type PtySpan,
 } from "@bridge/pty";
 import { readClipboardText, writeClipboardText } from "@bridge/clipboard";
 import { ContextMenu, type ContextMenuEntry } from "@ui/ContextMenu";
+import { Icon } from "@ui/Icon";
 import { useSettings } from "@store/settings";
+import { isTauri, openUrl } from "@bridge/commands";
+import { linkAt } from "./links";
+import { initialMatch, offsetForLine, stepMatch, visibleMatches } from "./search";
 import { useCellMetrics } from "./useCellMetrics";
 import { applyFrame as reduceFrame, emptyGrid, isFresh, type Grid } from "./grid";
 import {
@@ -62,7 +73,14 @@ import {
 } from "./scroll";
 import "./TerminalView.css";
 
-const FONT_FAMILY = '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace';
+/* After the bundled face: fonts that carry the Powerline and Nerd Font
+   private-use glyphs prompts and status lines draw with. The engine's own
+   fallback skips the private-use area, so without naming them these
+   painted as empty boxes. Each is only used if installed. */
+const FONT_FAMILY =
+  '"JetBrains Mono Variable", "JetBrains Mono", "Symbols Nerd Font Mono", "Symbols Nerd Font", ' +
+  '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "DejaVu Sans Mono for Powerline", ' +
+  '"Noto Sans Symbols 2", ui-monospace, monospace';
 const PADDING = 8;
 /** Two clicks closer together than this widen the selection to a word. */
 const MULTI_CLICK_MS = 400;
@@ -85,6 +103,8 @@ interface Props {
   focusOnShow?: boolean;
   onStatus?: (s: TerminalStatus) => void;
   onTitle?: (title: string | null) => void;
+  /** The program rang the bell or sent a notification. */
+  onBell?: () => void;
 }
 
 /* Sessions being handed to another window. A view unmounting normally
@@ -105,6 +125,7 @@ export function TerminalView({
   focusOnShow = true,
   onStatus,
   onTitle,
+  onBell,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
@@ -137,6 +158,8 @@ export function TerminalView({
     alternateScreen: false,
     mouseMode: "none" as PtyMouseMode,
     mouseEncoding: "default" as PtyMouseEncoding,
+    focusReporting: false,
+    kittyFlags: 0,
   });
   const seqRef = useRef(-1);
   /** Size the host has actually been told about, to avoid redundant IPC. */
@@ -153,10 +176,12 @@ export function TerminalView({
      ref keeps the session effect from tearing down the shell. */
   const onStatusRef = useRef(onStatus);
   const onTitleRef = useRef(onTitle);
+  const onBellRef = useRef(onBell);
   const focusOnShowRef = useRef(focusOnShow);
   useEffect(() => {
     onStatusRef.current = onStatus;
     onTitleRef.current = onTitle;
+    onBellRef.current = onBell;
     focusOnShowRef.current = focusOnShow;
   });
 
@@ -219,6 +244,8 @@ export function TerminalView({
       alternateScreen: frame.alternateScreen ?? false,
       mouseMode: frame.mouseMode ?? "none",
       mouseEncoding: frame.mouseEncoding ?? "default",
+      focusReporting: frame.focusReporting ?? false,
+      kittyFlags: frame.kittyFlags ?? 0,
     };
     setCursor({ row: frame.cursorRow, col: frame.cursorCol, visible: frame.cursorVisible });
     setScrolledBack(frame.scrollback);
@@ -239,6 +266,7 @@ export function TerminalView({
     let disposed = false;
     let unlistenFrame: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
+    let unlistenExtras: (() => void) | null = null;
     let spawnedId: string | null = null;
 
     seqRef.current = -1;
@@ -281,20 +309,33 @@ export function TerminalView({
            produced in between are not lost: they are deltas against rows
            the host considers painted, and the refresh below asks for the
            whole screen again. */
-        const [uf, ue] = await Promise.all([
+        const [uf, ue, uc, ub] = await Promise.all([
           onPtyFrame(session.id, applyFrame),
           onPtyExit(session.id, (e) =>
             publishStatus({ phase: "exited", code: e.code, message: e.message }),
           ),
+          // OSC 52: a program (vim, tmux, anything over ssh) copying to the
+          // system clipboard. Write-only — the host never answers reads.
+          onPtyClipboard(session.id, (e) => {
+            const text = decodeClipboard(e.data);
+            if (text) void writeClipboardText(text);
+          }),
+          onPtyBell(session.id, () => onBellRef.current?.()),
         ]);
         if (disposed) {
           uf();
           ue();
+          uc();
+          ub();
           if (!adopting) void ptyKill(session.id).catch(() => {});
           return;
         }
         unlistenFrame = uf;
         unlistenExit = ue;
+        unlistenExtras = () => {
+          uc();
+          ub();
+        };
         publishStatus({
           phase: "running",
           id: session.id,
@@ -325,6 +366,7 @@ export function TerminalView({
       disposed = true;
       unlistenFrame?.();
       unlistenExit?.();
+      unlistenExtras?.();
       const id = spawnedId ?? sessionRef.current;
       if (id) {
         sessionRef.current = null;
@@ -374,11 +416,27 @@ export function TerminalView({
     return writeClipboardText(text);
   }, [grid, selection, size.cols]);
 
-  const pasteClipboard = useCallback(async () => {
-    if (!sessionRef.current) return;
-    const text = await readClipboardText();
-    if (text) send(encodePaste(text, modesRef.current.bracketedPaste));
-  }, [send]);
+  /** Paste the clipboard's text. With `forwardKey`, a clipboard holding
+      no text (an image) sends Ctrl+V to the program instead — see
+      `ctrlVBytes` for why that is what makes image paste work. */
+  const pasteClipboard = useCallback(
+    async (forwardKey = false) => {
+      if (!sessionRef.current) return;
+      const text = await readClipboardText();
+      if (text) send(encodePaste(text, modesRef.current.bracketedPaste));
+      else if (forwardKey) send(ctrlVBytes(modesRef.current.kittyFlags));
+    },
+    [send],
+  );
+
+  /** Hand a link from the screen to the browser. */
+  const openLink = useCallback((url: string) => {
+    if (!isTauri) {
+      window.open(url, "_blank", "noopener");
+      return;
+    }
+    void openUrl(url).catch((err) => console.warn("[terminal] could not open link", err));
+  }, []);
 
   /* ---------- Viewport scrolling ----------
 
@@ -568,6 +626,19 @@ export function TerminalView({
       }
       if (e.button !== 0) return;
 
+      /* Ctrl+click opens a link under the pointer — before mouse
+         reporting, because a program rarely wants Ctrl+click on a URL and
+         a terminal whose links cannot be followed inside a TUI is worse. */
+      if (e.ctrlKey || e.metaKey) {
+        const at = pointAt(e.clientX, e.clientY, "floor");
+        const link = linkAt(grid[at.row], at.col, size.cols);
+        if (link) {
+          e.preventDefault();
+          openLink(link.url);
+          return;
+        }
+      }
+
       /* A program that asked for mouse reporting owns the pointer: a
          click is a click for it, not a selection for us. Shift is the
          standard override, which is how you select text inside vim.
@@ -626,7 +697,7 @@ export function TerminalView({
       e.currentTarget.setPointerCapture(e.pointerId);
       setSelection({ anchor: at, focus: at, mode: "char" });
     },
-    [pointAt, pasteClipboard, grid, size.cols],
+    [pointAt, pasteClipboard, grid, size.cols, openLink],
   );
 
   const onScreenPointerMove = useCallback(
@@ -701,6 +772,96 @@ export function TerminalView({
     [pointAt, send],
   );
 
+  /* ---------- Find in terminal ----------
+
+     The host searches everything it holds — 5000 lines of scrollback and
+     the screen — and the bar steps through the hits, scrolling each into
+     view. Enter goes to the next older hit, Shift+Enter the next newer. */
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCase, setFindCase] = useState(false);
+  const [found, setFound] = useState<PtySearchResult | null>(null);
+  const [current, setCurrent] = useState(-1);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
+  const findSeqRef = useRef(0);
+
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    requestAnimationFrame(() => {
+      findInputRef.current?.focus();
+      findInputRef.current?.select();
+    });
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setFound(null);
+    setCurrent(-1);
+    screenRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  /** Scroll so match `index` is on screen, unless it already is. */
+  const reveal = useCallback(
+    (result: PtySearchResult, index: number) => {
+      const m = result.matches[index];
+      if (!m) return;
+      const row = m.line - (scrollMax - scrolledBack);
+      if (row >= 0 && row < size.rows) return;
+      scrollTo(offsetForLine(m.line, result.scrollbackMax, size.rows));
+    },
+    [scrollMax, scrolledBack, size.rows, scrollTo],
+  );
+
+  const runSearch = useCallback(async () => {
+    const id = sessionRef.current;
+    const seq = ++findSeqRef.current;
+    if (!id || !findQuery) {
+      setFound(null);
+      setCurrent(-1);
+      return null;
+    }
+    try {
+      const result = await ptySearch(id, findQuery, findCase);
+      if (seq !== findSeqRef.current) return null;
+      setFound(result);
+      return result;
+    } catch (err) {
+      console.warn("[terminal] search failed", err);
+      return null;
+    }
+  }, [findQuery, findCase]);
+
+  // Search as the query changes, a beat after the last keystroke.
+  useEffect(() => {
+    if (!findOpen) return;
+    const t = setTimeout(() => {
+      void runSearch().then((result) => {
+        if (!result) return;
+        const idx = initialMatch(result.matches);
+        setCurrent(idx);
+        if (idx >= 0) reveal(result, idx);
+      });
+    }, 150);
+    return () => clearTimeout(t);
+    // `reveal` changes as the view scrolls; re-searching on scroll is not wanted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findOpen, runSearch]);
+
+  const step = useCallback(
+    (dir: 1 | -1) => {
+      if (!found) return;
+      const next = stepMatch(current, found.matches.length, dir);
+      setCurrent(next);
+      if (next >= 0) reveal(found, next);
+    },
+    [found, current, reveal],
+  );
+
+  const matchBoxes = useMemo(
+    () => (found ? visibleMatches(found.matches, scrollMax, scrolledBack, size.rows) : []),
+    [found, scrollMax, scrolledBack, size.rows],
+  );
+
   /* ---------- Keyboard ----------
 
      Tab and Shift+Tab are focus-navigation keys to the engine before they
@@ -714,6 +875,15 @@ export function TerminalView({
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (status.phase !== "running") return;
 
+      // Ctrl+Shift+F searches the scrollback. Plain Ctrl+F stays the
+      // shell's (readline's forward-char).
+      if (e.ctrlKey && e.shiftKey && !e.altKey && (e.key === "F" || e.key === "f")) {
+        e.preventDefault();
+        e.stopPropagation();
+        openFind();
+        return;
+      }
+
       /* Copy and paste are the surface's, never the shell's — Ctrl+C has
          to stay SIGINT, which is the whole reason terminals moved copy
          onto Ctrl+Shift+C and Ctrl+Insert. */
@@ -722,7 +892,7 @@ export function TerminalView({
         e.preventDefault();
         e.stopPropagation();
         if (clip === "copy") void copySelection();
-        else void pasteClipboard();
+        else void pasteClipboard(true);
         return;
       }
 
@@ -769,6 +939,7 @@ export function TerminalView({
       copySelection,
       pasteClipboard,
       selection,
+      openFind,
     ],
   );
 
@@ -780,23 +951,127 @@ export function TerminalView({
       e.preventDefault();
       const text = e.clipboardData.getData("text/plain");
       if (text) send(encodePaste(text, modesRef.current.bracketedPaste));
+      else if (e.clipboardData.types.some((t) => t === "Files" || t.startsWith("image/"))) {
+        send(ctrlVBytes(modesRef.current.kittyFlags));
+      }
     },
     [send],
   );
+
+  /* ---------- Focus reporting (DEC 1004) ----------
+
+     Editors reload changed files and agents pause spinners on these. The
+     surface only reports while the program has asked. */
+  const reportFocus = useCallback(
+    (gained: boolean) => {
+      if (modesRef.current.focusReporting) send(gained ? "\x1b[I" : "\x1b[O");
+    },
+    [send],
+  );
+
+  /* ---------- File drop ----------
+
+     Dropping files on a terminal types their paths, shell-quoted, the way
+     every desktop terminal does. It is also how an image reaches a program
+     that attaches pictures by path — Claude Code turns a pasted image path
+     into an attachment. Tauri intercepts OS file drops before the DOM sees
+     them, so the drop arrives as a webview event with window coordinates. */
+  const [dropping, setDropping] = useState(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    const inside = (pos: { x: number; y: number }) => {
+      const box = hostRef.current?.getBoundingClientRect();
+      if (!box || box.width === 0) return false;
+      const x = pos.x / window.devicePixelRatio;
+      const y = pos.y / window.devicePixelRatio;
+      return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+    };
+    void import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) =>
+        getCurrentWebview().onDragDropEvent((event) => {
+          const p = event.payload;
+          if (p.type === "leave") {
+            setDropping(false);
+            return;
+          }
+          const over = inside(p.position);
+          if (p.type === "enter" || p.type === "over") {
+            setDropping(over);
+            return;
+          }
+          setDropping(false);
+          if (!over || !sessionRef.current || p.paths.length === 0) return;
+          const text = p.paths.map(shellQuote).join(" ") + " ";
+          send(encodePaste(text, modesRef.current.bracketedPaste));
+          screenRef.current?.focus({ preventScroll: true });
+        }),
+      )
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [send]);
+
+  /* ---------- Theme colours for the host ----------
+
+     Programs ask the terminal for its background (OSC 11) to choose a
+     light or dark scheme. The host answers from what it was told last.
+     The theme is read off `data-theme` on <html> rather than the theme
+     context, so the pop-out window — which has no provider — keeps up. */
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || !isTauri) return;
+    const push = () => {
+      const css = getComputedStyle(el);
+      const fg = css.getPropertyValue("--term-fg").trim();
+      const bg = css.getPropertyValue("--term-bg").trim();
+      const cursorColor = css.getPropertyValue("--term-cursor").trim();
+      if (fg && bg) void ptySetPalette(fg, bg, cursorColor || undefined).catch(() => {});
+    };
+    push();
+    const mo = new MutationObserver(push);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => mo.disconnect();
+  }, []);
 
   /* ---------- Context menu ---------- */
 
   const hasSelection = !selectionIsEmpty(selection, size.cols);
 
+  /** The link under the pointer when the menu was opened. */
+  const [menuLink, setMenuLink] = useState<string | null>(null);
+  const onContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const at = pointAt(e.clientX, e.clientY, "floor");
+      setMenuLink(linkAt(grid[at.row], at.col, size.cols)?.url ?? null);
+    },
+    [pointAt, grid, size.cols],
+  );
+
   const menuEntries = useMemo<ContextMenuEntry[]>(
     () => [
+      ...(menuLink
+        ? ([
+            { id: "openLink", label: "Open link", icon: "external", shortcut: "Ctrl+Click" },
+            { id: "copyLink", label: "Copy link", icon: "link" },
+            { id: "sepLink", separator: true },
+          ] satisfies ContextMenuEntry[])
+        : []),
       { id: "copy", label: "Copy", icon: "copy", shortcut: "Ctrl+Shift+C", disabled: !hasSelection },
       { id: "paste", label: "Paste", icon: "clipboard", shortcut: "Ctrl+Shift+V" },
       { id: "sep", separator: true },
+      { id: "find", label: "Find…", icon: "search", shortcut: "Ctrl+Shift+F" },
       { id: "selectAll", label: "Select all", icon: "check" },
       { id: "clear", label: "Clear selection", icon: "close", disabled: !hasSelection },
     ],
-    [hasSelection],
+    [hasSelection, menuLink],
   );
 
   const onMenuSelect = useCallback(
@@ -806,7 +1081,7 @@ export function TerminalView({
           void copySelection();
           break;
         case "paste":
-          void pasteClipboard();
+          void pasteClipboard(true);
           break;
         case "selectAll":
           setSelection(selectAll(size.rows, size.cols));
@@ -814,10 +1089,19 @@ export function TerminalView({
         case "clear":
           setSelection(null);
           break;
+        case "openLink":
+          if (menuLink) openLink(menuLink);
+          break;
+        case "copyLink":
+          if (menuLink) void writeClipboardText(menuLink);
+          break;
+        case "find":
+          openFind();
+          return;
       }
       screenRef.current?.focus({ preventScroll: true });
     },
-    [copySelection, pasteClipboard, size.rows, size.cols],
+    [copySelection, pasteClipboard, size.rows, size.cols, menuLink, openLink, openFind],
   );
 
   /* ---------- Render ---------- */
@@ -878,9 +1162,16 @@ export function TerminalView({
           aria-label="Terminal"
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
+          onFocus={() => {
+            setFocused(true);
+            reportFocus(true);
+          }}
+          onBlur={() => {
+            setFocused(false);
+            reportFocus(false);
+          }}
           onPointerDown={onScreenPointerDown}
+          onContextMenu={onContextMenu}
           onPointerMove={onScreenPointerMove}
           onPointerUp={endSelecting}
           onPointerCancel={endSelecting}
@@ -893,6 +1184,20 @@ export function TerminalView({
                 top: seg.y * cell.height,
                 left: seg.col * cell.width,
                 width: seg.width * cell.width,
+                height: cell.height,
+              }}
+              aria-hidden
+            />
+          ))}
+
+          {matchBoxes.map((m) => (
+            <div
+              key={`${m.index}`}
+              className={`tv__match ${m.index === current ? "is-current" : ""}`}
+              style={{
+                top: m.row * cell.height,
+                left: m.col * cell.width,
+                width: m.len * cell.width,
                 height: cell.height,
               }}
               aria-hidden
@@ -949,10 +1254,78 @@ export function TerminalView({
         )}
 
         {scrolledBack > 0 && (
-          <button type="button" className="tv__scrollback" onClick={() => scrollTo(0)}>
+          <button
+            type="button"
+            className="tv__scrollback"
+            // Keep the keyboard on the terminal: a button that takes focus
+            // sends the next thing typed nowhere.
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => {
+              scrollTo(0);
+              screenRef.current?.focus({ preventScroll: true });
+            }}
+          >
             {scrolledBack} rows back — jump to latest
           </button>
         )}
+
+        {findOpen && (
+          <div
+            className="tv__find"
+            role="search"
+            onPointerDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            <input
+              ref={findInputRef}
+              className="tv__findInput"
+              value={findQuery}
+              placeholder="Find in terminal"
+              aria-label="Find in terminal"
+              spellCheck={false}
+              onChange={(e) => setFindQuery(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  step(e.shiftKey ? 1 : -1);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeFind();
+                }
+              }}
+            />
+            <span className="tv__findCount" aria-live="polite">
+              {!findQuery
+                ? ""
+                : !found
+                  ? "…"
+                  : found.matches.length === 0
+                    ? "No results"
+                    : `${current + 1}/${found.matches.length}${found.truncated ? "+" : ""}`}
+            </span>
+            <button
+              type="button"
+              className={`tv__findBtn ${findCase ? "is-on" : ""}`}
+              aria-pressed={findCase}
+              title="Match case"
+              onClick={() => setFindCase((v) => !v)}
+            >
+              Aa
+            </button>
+            <button type="button" className="tv__findBtn" title="Older (Enter)" aria-label="Older match" onClick={() => step(-1)}>
+              <Icon name="arrow-up" size={13} />
+            </button>
+            <button type="button" className="tv__findBtn" title="Newer (Shift+Enter)" aria-label="Newer match" onClick={() => step(1)}>
+              <Icon name="chevron-down" size={13} />
+            </button>
+            <button type="button" className="tv__findBtn" title="Close (Esc)" aria-label="Close find" onClick={closeFind}>
+              <Icon name="close" size={12} />
+            </button>
+          </div>
+        )}
+
+        {dropping && <div className="tv__drop">Drop to insert the path</div>}
 
         {status.phase !== "running" && <StatusOverlay status={status} />}
       </div>
@@ -960,16 +1333,27 @@ export function TerminalView({
   );
 }
 
+/** Quote a path for a POSIX shell, leaving plain ones readable. */
+export function shellQuote(path: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(path)) return path;
+  return `'${path.replace(/'/g, "'\\''")}'`;
+}
+
 /** One styled run, positioned by column so gaps stay gaps. */
 function Cell({ span, cell }: { span: PtySpan; cell: { width: number; height: number } }) {
   const fg = span.inverse ? span.bg : span.fg;
   const bg = span.inverse ? span.fg : span.bg;
+  const color = fg ?? (span.inverse ? "var(--term-bg)" : undefined);
   return (
     <span
       className="tv__span"
       style={{
         left: span.col * cell.width,
-        color: fg ?? (span.inverse ? "var(--term-bg)" : undefined),
+        // Faint text keeps its hue at reduced strength over whatever is
+        // behind it, which is what SGR 2 means — not bold.
+        color: span.dim
+          ? `color-mix(in srgb, ${color ?? "var(--term-fg)"} 55%, transparent)`
+          : color,
         background: bg ?? (span.inverse ? "var(--term-fg)" : undefined),
         fontWeight: span.bold ? 700 : undefined,
         fontStyle: span.italic ? "italic" : undefined,
