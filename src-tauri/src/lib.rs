@@ -206,9 +206,18 @@ fn rename(from: String, to: String) -> Result<(), HostError> {
     Ok(())
 }
 
+/// Remove `path`. By default it goes to the OS trash so the user can
+/// restore it; `permanent` skips the trash (Shift+Delete in the explorer).
+/// A trash failure is reported rather than silently falling back to a
+/// permanent delete: the user asked for something recoverable.
 #[tauri::command]
-fn delete(path: String) -> Result<(), HostError> {
+fn delete(path: String, permanent: Option<bool>) -> Result<(), HostError> {
     let meta = std::fs::metadata(&path)?;
+    if !permanent.unwrap_or(false) {
+        return trash::delete(&path).map_err(|e| HostError::Internal {
+            message: format!("could not move to trash: {e}"),
+        });
+    }
     if meta.is_dir() {
         std::fs::remove_dir_all(&path)?;
     } else {
@@ -323,6 +332,22 @@ fn open_with_os(path: String) -> Result<(), HostError> {
     } else {
         Command::new("xdg-open").arg(&path).spawn().map(|_| ()).map_err(|e| HostError::Internal { message: e.to_string() })
     }
+}
+
+/// Let the webview stream one file through the asset protocol. The
+/// configured scope is empty, so the media player can reach exactly the
+/// files the user opened and nothing else on disk.
+#[tauri::command]
+fn media_allow(app: tauri::AppHandle, path: String) -> Result<(), HostError> {
+    let p = std::path::Path::new(&path);
+    if !p.is_file() {
+        return Err(HostError::NotFound { path });
+    }
+    app.asset_protocol_scope()
+        .allow_file(p)
+        .map_err(|e| HostError::Internal {
+            message: e.to_string(),
+        })
 }
 
 #[tauri::command]
@@ -534,6 +559,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_file,
             read_file_base64,
+            media_allow,
             write_file,
             write_file_base64,
             read_dir,

@@ -134,6 +134,8 @@ export function buildCommands(): CommandSpec[] {
         const a = active(); if (!a) return;
         // Binary documents cycle only between their own two surfaces:
         // reading base64 as source text is never what the user meant.
+        // Video and audio have one surface each.
+        if (a.mode === "video" || a.mode === "audio") return;
         const order: DocMode[] = a.binary
           ? ["image", "imageedit"]
           : ["markdown", "rich", "code", "html", "svg"];
@@ -367,27 +369,27 @@ export function buildCommands(): CommandSpec[] {
     {
       id: "format.headingPromote", title: "Promote Heading", category: "Format",
       icon: "h1", shortcut: mod("["),
-      run: () => { window.dispatchEvent(new CustomEvent("spark:md:format:headingPromote")); },
+      run: runIfActive((a) => emitFormat(a.mode, "headingPromote")),
     },
     {
       id: "format.headingDemote", title: "Demote Heading", category: "Format",
       icon: "h3", shortcut: mod("]"),
-      run: () => { window.dispatchEvent(new CustomEvent("spark:md:format:headingDemote")); },
+      run: runIfActive((a) => emitFormat(a.mode, "headingDemote")),
     },
     {
       id: "format.listBullet", title: "Bullet List", category: "Format",
       icon: "list-ul", shortcut: mod("Shift+8"),
-      run: () => { window.dispatchEvent(new CustomEvent("spark:md:format:listBullet")); },
+      run: runIfActive((a) => emitFormat(a.mode, "listBullet")),
     },
     {
       id: "format.listNumber", title: "Numbered List", category: "Format",
       icon: "list-ol", shortcut: mod("Shift+7"),
-      run: () => { window.dispatchEvent(new CustomEvent("spark:md:format:listNumber")); },
+      run: runIfActive((a) => emitFormat(a.mode, "listNumber")),
     },
     {
       id: "format.quote", title: "Block Quote", category: "Format",
       icon: "quote", shortcut: mod("Shift+."),
-      run: () => { window.dispatchEvent(new CustomEvent("spark:md:format:quote")); },
+      run: runIfActive((a) => emitFormat(a.mode, "quote")),
     },
 
     /* ---------- Window ---------- */
@@ -460,15 +462,14 @@ export function buildCommands(): CommandSpec[] {
       keywords: ["ota", "update", "updater"],
       run: () => { window.dispatchEvent(new CustomEvent("spark:help:checkForUpdates")); },
     },
-    {
-      id: "help.devtools", title: "Toggle Developer Tools", category: "Help",
-      icon: "code",
-      run: () => { window.dispatchEvent(new CustomEvent("spark:devtools:toggle")); },
-    },
   ];
 }
 
-function emitFormat(mode: DocMode, kind: "bold" | "italic" | "inlineCode" | "link") {
+type FormatKind =
+  | "bold" | "italic" | "inlineCode" | "link"
+  | "headingPromote" | "headingDemote" | "listBullet" | "listNumber" | "quote";
+
+function emitFormat(mode: DocMode, kind: FormatKind) {
   const prefix = mode === "markdown" ? "spark:md:format"
                : mode === "rich"     ? "spark:rich:format"
                :                       "spark:code:format";

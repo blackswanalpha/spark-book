@@ -18,10 +18,11 @@ vi.mock("@bridge/commands", () => ({
   })),
   saveFileDialog: vi.fn(async () => null),
   recentsAdd: vi.fn(async (p) => ["/welcome.md", p]),
+  copyPath: vi.fn(async () => undefined),
 }));
 
-import { useDocs, basename, isBinaryMode } from "./documents";
-import { writeFile, writeFileBase64, saveFileDialog, recentsAdd } from "@bridge/commands";
+import { useDocs, basename, isBinaryMode, isStreamMode } from "./documents";
+import { writeFile, writeFileBase64, saveFileDialog, recentsAdd, copyPath } from "@bridge/commands";
 
 const mockedWriteFile = vi.mocked(writeFile);
 const mockedWriteFileBase64 = vi.mocked(writeFileBase64);
@@ -314,5 +315,54 @@ describe("binary documents", () => {
     const id = useDocs.getState().open({ name: "a.md", mode: "markdown", raw: "# hi" });
     useDocs.getState().setMode(id, "pdf");
     expect(useDocs.getState().docs[id].mode).toBe("markdown");
+  });
+});
+
+describe("streamed documents (video, audio)", () => {
+  it("are binary and streamed", () => {
+    expect(isBinaryMode("video")).toBe(true);
+    expect(isStreamMode("audio")).toBe(true);
+    expect(isStreamMode("pdf")).toBe(false);
+  });
+
+  it("never write on Save: the empty buffer would truncate the file", async () => {
+    const id = useDocs.getState().open({ name: "a.mp4", path: "/a.mp4", mode: "video", raw: "" });
+    const result = await useDocs.getState().saveDocument(id);
+    expect(result).toEqual({ ok: true, path: "/a.mp4" });
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(mockedWriteFileBase64).not.toHaveBeenCalled();
+  });
+
+  it("copy the file on Save As and follow the copy", async () => {
+    mockedSaveFileDialog.mockReset();
+    mockedSaveFileDialog.mockResolvedValue("/b.mp3");
+    const id = useDocs.getState().open({ name: "a.mp3", path: "/a.mp3", mode: "audio", raw: "" });
+    const result = await useDocs.getState().saveDocumentAs(id);
+    expect(result).toEqual({ ok: true, path: "/b.mp3" });
+    expect(vi.mocked(copyPath)).toHaveBeenCalledWith("/a.mp3", "/b.mp3");
+    expect(mockedWriteFileBase64).not.toHaveBeenCalled();
+    expect(useDocs.getState().docs[id].path).toBe("/b.mp3");
+    expect(useDocs.getState().docs[id].name).toBe("b.mp3");
+  });
+
+  it("report an existing Save As target in words", async () => {
+    mockedSaveFileDialog.mockReset();
+    mockedSaveFileDialog.mockResolvedValue("/taken.mp3");
+    vi.mocked(copyPath).mockRejectedValueOnce({ kind: "AlreadyExists", data: { path: "/taken.mp3" } });
+    const id = useDocs.getState().open({ name: "a.mp3", path: "/a.mp3", mode: "audio", raw: "" });
+    const result = await useDocs.getState().saveDocumentAs(id);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error instanceof Error && result.error.message).toMatch(/already exists/);
+    expect(useDocs.getState().docs[id].path).toBe("/a.mp3");
+  });
+
+  it("cannot switch to another binary surface", () => {
+    const id = useDocs.getState().open({ name: "a.mp4", path: "/a.mp4", mode: "video", raw: "" });
+    useDocs.getState().setMode(id, "image");
+    useDocs.getState().setMode(id, "audio");
+    expect(useDocs.getState().docs[id].mode).toBe("video");
+    const img = useDocs.getState().open({ name: "a.png", mode: "image", raw: "QUJD" });
+    useDocs.getState().setMode(img, "video");
+    expect(useDocs.getState().docs[img].mode).toBe("image");
   });
 });
