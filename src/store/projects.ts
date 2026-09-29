@@ -100,7 +100,7 @@ export const MAX_EXPANDED = 200;
 
 const DOC_MODES: DocMode[] = [
   "markdown", "rich", "code", "html", "svg",
-  "image", "imageedit", "animation", "pdf",
+  "image", "imageedit", "animation", "pdf", "video", "audio",
 ];
 
 export const EMPTY_WORKSPACE: Workspace = {

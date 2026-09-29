@@ -7,12 +7,26 @@
    site that forgot the difference opened a PNG as mojibake. This
    module owns the choice so the callers only pass a path.
    ============================================================ */
-import { readFile, readFileBase64, recentsAdd, pickMode, isBinaryPath } from "@bridge/commands";
-import { useDocs, isBinaryMode, basename } from "@store/documents";
+import { readFile, readFileBase64, recentsAdd, pickMode, isBinaryPath, stat } from "@bridge/commands";
+import { useDocs, isBinaryMode, isStreamMode, basename, type DocMode } from "@store/documents";
 
 export interface OpenPathResult {
   id: string;
   mode: ReturnType<typeof pickMode>;
+}
+
+/**
+ * The `raw` a document in `mode` starts with. Video and audio are not read
+ * at all: the player streams them from the path, and a multi-gigabyte
+ * base64 string would stall the webview. A stat still runs so a missing
+ * file rejects here, like every other mode.
+ */
+export async function readForMode(path: string, mode: DocMode): Promise<string> {
+  if (isStreamMode(mode)) {
+    await stat(path);
+    return "";
+  }
+  return isBinaryMode(mode) || isBinaryPath(path) ? readFileBase64(path) : readFile(path);
 }
 
 /**
@@ -22,7 +36,7 @@ export interface OpenPathResult {
 export async function openPath(path: string): Promise<OpenPathResult> {
   const mode = pickMode(path);
   const binary = isBinaryMode(mode) || isBinaryPath(path);
-  const raw = binary ? await readFileBase64(path) : await readFile(path);
+  const raw = await readForMode(path, mode);
   const id = useDocs.getState().open({
     name: basename(path) || path,
     path,

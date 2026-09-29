@@ -19,6 +19,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 
 ---
 
+## [0.9.0] — 2026-09-30
+
+The terminal becomes one that agents and full-screen programs can rely on, and the explorer and menus finally do what they say.
+
+### Added
+
+- **Image paste into Claude Code.** Ctrl+V with a picture on the clipboard reaches the program, which reads the image itself. It used to be taken as a text paste, find no text, and send nothing.
+- **The terminal answers.** Device attributes, cursor position, XTVERSION, mode queries (DECRQM) and colour queries (OSC 10/11/12/4) get replies. fish, prompt_toolkit and crossterm programs that waited on them no longer stall.
+- **Kitty keyboard protocol** (disambiguate flag) for programs that ask. Shift+Enter inserts a newline in Claude Code. Flags are kept per screen, and `reset` clears them.
+- **Synchronized output** (DEC 2026), **focus reporting** (DEC 1004), and **OSC 52 copy**. Clipboard reads are refused.
+- **Find in the terminal** (Ctrl+Shift+F) over the whole scrollback, with match case and next/previous.
+- **Links.** Ctrl+click opens a URL; right-click offers Open link and Copy link. Only http(s) links are opened.
+- **File drop** types the dropped paths, shell-quoted.
+- **Bell badges.** A bell or notification from a background tab marks it until it is looked at.
+- **Explorer.** Inline create and rename (nested paths), delete to the OS trash, navigation with a breadcrumb, filter, drag and drop, auto-reveal, Duplicate and Copy Path.
+- **Media player** for audio and video, streamed through the asset protocol with a per-file scope.
+
+### Changed
+
+- New terminals start in the home folder when no folder is open, not `/`.
+- Shells run with `TERM_PROGRAM=sparkBook`. They no longer inherit the launching terminal's identity or the markers of a Claude Code session the app was started from.
+- The first-run wizard describes the nine surfaces and the terminal.
+
+### Fixed
+
+- **"Jump to latest" and the terminal scrollbar could not be clicked** while the terminal had focus. The global focus ring's z-index lifted the grid over them.
+- **The terminal's right-click menu opened beneath the panel.** Menus now render above modal-layer surfaces.
+- **Faint (SGR 2) text was drawn bold.**
+- **Symbols and emoji pushed the rest of the line off its columns.** Each glyph from a fallback font now starts on its own column.
+- **23 menu and palette commands did nothing.** All are wired.
+
+---
+
 ## [0.8.0] — 2026-09-04
 
 sparkEditor is now **sparkBook**, and the window opens four more kinds of document.
@@ -306,7 +339,8 @@ Initial public scaffolding. Usable in Vite (browser mock FS) and via Tauri when 
 - Session restore (`app_data_dir/recents.json`, window geometry) — host commands exist, renderer boot wiring is best-effort.
 - Single window, single user, local files only — no sync, no LSP/DAP, no collaboration (by design — see `explanation.md:7`).
 
-[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.9.0
 [0.8.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.8.0
 [0.7.2]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.7.2
 [0.5.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.5.0

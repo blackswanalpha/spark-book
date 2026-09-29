@@ -5,6 +5,8 @@
    the editor holds, rendered with a tiny built-in md→html
    pipeline (we keep it self-contained instead of pulling in
    remark to keep the renderer bundle slim).
+   Also answers the Edit / Selection menu events, the block
+   format commands, and View → Toggle Word Wrap / Preview.
    ============================================================ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
@@ -21,6 +23,7 @@ import { motion } from "@motion/index";
 import { renderMd } from "./renderMd";
 import "../editor.css";
 import { restoreViewState, trackScroll } from "@editor/CodeEditor/viewState";
+import { bindEditEvents } from "@editor/CodeEditor/editEvents";
 
 export function MarkdownEditor({ docId }: { docId: string }) {
   const doc = useDocs((s) => s.docs[docId]);
@@ -32,6 +35,10 @@ export function MarkdownEditor({ docId }: { docId: string }) {
   const [preview, setPreview] = useState(true);
   const { isDark } = useTheme();
   const themeComp = useRef(new Compartment()).current;
+  /* Word wrap is off until toggled, and survives a doc switch because
+     the rebuild reads the ref. */
+  const wrapComp = useRef(new Compartment()).current;
+  const wrapRef = useRef(false);
 
   /* Persisted caret and scroll, read through a ref so the build effect
      below stays keyed on docId alone. */
@@ -62,6 +69,7 @@ export function MarkdownEditor({ docId }: { docId: string }) {
         ])),
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         themeComp.of(EditorView.theme({}, { dark: isDark })),
+        wrapComp.of(wrapRef.current ? EditorView.lineWrapping : []),
         EditorView.updateListener.of((v) => {
           if (v.docChanged) setRaw(docId, v.state.doc.toString());
           if (v.selectionSet || v.docChanged) {
@@ -125,6 +133,33 @@ export function MarkdownEditor({ docId }: { docId: string }) {
       changes: { from: line.from, insert: prefix },
       selection: { anchor: pos + prefix.length },
     });
+    v.focus();
+  }, []);
+
+  /* Promote drops one "#" (H1 falls back to a paragraph); demote adds
+     one (a paragraph becomes H1), capped at H6. Applies to every line
+     the selection touches; blank lines are left alone. */
+  const shiftHeading = useCallback((delta: 1 | -1) => {
+    const v = viewRef.current;
+    if (!v) return;
+    const { from, to } = v.state.selection.main;
+    const first = v.state.doc.lineAt(from).number;
+    const last = v.state.doc.lineAt(to).number;
+    const changes: { from: number; to: number; insert: string }[] = [];
+    for (let n = first; n <= last; n++) {
+      const line = v.state.doc.line(n);
+      if (!line.text.trim()) continue;
+      const m = /^(#{1,6})[ \t]+/.exec(line.text);
+      const level = m ? m[1].length : 0;
+      const next = Math.max(0, Math.min(6, level + delta));
+      if (next === level) continue;
+      changes.push({
+        from: line.from,
+        to: line.from + (m ? m[0].length : 0),
+        insert: next ? `${"#".repeat(next)} ` : "",
+      });
+    }
+    if (changes.length) v.dispatch({ changes });
     v.focus();
   }, []);
 
@@ -193,6 +228,47 @@ export function MarkdownEditor({ docId }: { docId: string }) {
       window.removeEventListener("spark:md:format:link", onLink);
     };
   }, [insert]);
+
+  /* Block formats from the Format menu, via the toolbar's helpers. */
+  useEffect(() => {
+    const onPromote = () => shiftHeading(-1);
+    const onDemote = () => shiftHeading(1);
+    const onBullet = () => insertAtLineStart("- ");
+    const onNumber = () => insertAtLineStart("1. ");
+    const onQuote = () => insertAtLineStart("> ");
+    window.addEventListener("spark:md:format:headingPromote", onPromote);
+    window.addEventListener("spark:md:format:headingDemote", onDemote);
+    window.addEventListener("spark:md:format:listBullet", onBullet);
+    window.addEventListener("spark:md:format:listNumber", onNumber);
+    window.addEventListener("spark:md:format:quote", onQuote);
+    return () => {
+      window.removeEventListener("spark:md:format:headingPromote", onPromote);
+      window.removeEventListener("spark:md:format:headingDemote", onDemote);
+      window.removeEventListener("spark:md:format:listBullet", onBullet);
+      window.removeEventListener("spark:md:format:listNumber", onNumber);
+      window.removeEventListener("spark:md:format:quote", onQuote);
+    };
+  }, [shiftHeading, insertAtLineStart]);
+
+  /* View → Toggle Word Wrap / Toggle Preview. */
+  useEffect(() => {
+    const onWrap = () => {
+      wrapRef.current = !wrapRef.current;
+      viewRef.current?.dispatch({
+        effects: wrapComp.reconfigure(wrapRef.current ? EditorView.lineWrapping : []),
+      });
+    };
+    const onPreview = () => setPreview((p) => !p);
+    window.addEventListener("spark:view:toggleWordWrap", onWrap);
+    window.addEventListener("spark:view:togglePreview", onPreview);
+    return () => {
+      window.removeEventListener("spark:view:toggleWordWrap", onWrap);
+      window.removeEventListener("spark:view:togglePreview", onPreview);
+    };
+  }, [wrapComp]);
+
+  /* Edit / Selection menu events. */
+  useEffect(() => bindEditEvents(() => viewRef.current), []);
 
   const wordCount = useMemo(() => {
     const text = doc?.raw ?? "";

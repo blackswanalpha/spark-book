@@ -1,5 +1,5 @@
 .popover {
-  z-index: var(--z-menu);
+  z-index: var(--z-popover);
   min-width: 220px;
   background: var(--surface-1);
   border: 1px solid var(--border);

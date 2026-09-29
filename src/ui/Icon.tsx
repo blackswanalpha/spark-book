@@ -101,6 +101,22 @@ import {
   Drop,
   Lock,
   LockOpen,
+  DotsThree,
+  ArrowsInLineVertical,
+  ClipboardText,
+  House,
+  SpeakerHigh,
+  SpeakerLow,
+  SpeakerX,
+  ClockClockwise,
+  ClockCounterClockwise,
+  PictureInPicture,
+  ClosedCaptioning,
+  GearSix,
+  MusicNotes,
+  VideoCamera,
+  Keyboard,
+  Info,
 } from "@phosphor-icons/react";
 import { DartIcon } from "./DartIcon";
 
@@ -197,6 +213,22 @@ const PHOSPHOR_MAP: Record<string, PhosphorComp> = {
   Drop,
   Lock,
   LockOpen,
+  DotsThree,
+  ArrowsInLineVertical,
+  ClipboardText,
+  House,
+  SpeakerHigh,
+  SpeakerLow,
+  SpeakerX,
+  ClockClockwise,
+  ClockCounterClockwise,
+  PictureInPicture,
+  ClosedCaptioning,
+  GearSix,
+  MusicNotes,
+  VideoCamera,
+  Keyboard,
+  Info,
 };
 
 const CUSTOM_MAP: Record<string, PhosphorComp> = {
@@ -272,6 +304,8 @@ const ALIAS: Record<string, keyof typeof PHOSPHOR_MAP | keyof typeof CUSTOM_MAP>
   "mode-imageedit": "PaintBrush",
   "mode-animation": "FilmStrip",
   "mode-pdf": "FilePdf",
+  "mode-video": "VideoCamera",
+  "mode-audio": "MusicNotes",
 
   /* Image-editor tools */
   "tool-move": "ArrowsOutCardinal",
@@ -306,6 +340,11 @@ const ALIAS: Record<string, keyof typeof PHOSPHOR_MAP | keyof typeof CUSTOM_MAP>
   "flip-v": "FlipVertical",
   "chevron-left": "CaretLeft",
   "chevron-up": "CaretUp",
+  /* Explorer toolbar */
+  more: "DotsThree",
+  "collapse-all": "ArrowsInLineVertical",
+  "copy-path": "ClipboardText",
+  home: "House",
 };
 
 export type LegacyIconName = keyof typeof ALIAS;

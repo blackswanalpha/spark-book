@@ -8,7 +8,8 @@
    `/docs/audits/inner`) for the assertions.
    ============================================================ */
 import { describe, it, expect, beforeEach } from "vitest";
-import { useExplorer } from "./explorer";
+import { useExplorer, isUnder, compareNodes, describeError, validateName, type ExplorerNode } from "./explorer";
+import { useDocs } from "./documents";
 
 describe("explorer store — context menu actions", () => {
   beforeEach(async () => {
@@ -184,5 +185,130 @@ describe("explorer store — navigation and loading state", () => {
     await useExplorer.getState().setRoot("/docs");
     await pending;
     expect(useExplorer.getState().loading.has("/docs/audits")).toBe(false);
+  });
+});
+
+describe("explorer helpers", () => {
+  it("treats everything as inside the root folder /", () => {
+    // Appending "/" to an ancestor of "/" made nothing count as inside it.
+    expect(isUnder("/docs", "/")).toBe(true);
+    expect(isUnder("/docs/a.md", "/docs")).toBe(true);
+    expect(isUnder("/docsx", "/docs")).toBe(false);
+  });
+
+  it("sorts folders first, then names naturally and case-insensitively", () => {
+    const n = (name: string, isDir = false): ExplorerNode => ({ name, path: `/${name}`, isDir, isFile: !isDir });
+    const sorted = [n("file10"), n("Zeta"), n("file2"), n("alpha"), n("src", true), n("Build", true)]
+      .sort(compareNodes)
+      .map((x) => x.name);
+    expect(sorted).toEqual(["Build", "src", "alpha", "file2", "file10", "Zeta"]);
+  });
+
+  it("describes host errors instead of printing [object Object]", () => {
+    expect(describeError({ kind: "AlreadyExists", data: { path: "/a/b.md" } })).toBe("“b.md” already exists here.");
+    expect(describeError({ kind: "NotFound", path: "/x.md" })).toBe("“x.md” no longer exists.");
+    expect(describeError({ kind: "Internal", data: { message: "disk full" } })).toBe("disk full");
+    expect(describeError(new Error("boom"))).toBe("boom");
+  });
+
+  it("validates names for create and rename", () => {
+    expect(validateName("a.md", ["a.md"])).toMatch(/already exists/);
+    expect(validateName("a.md", ["a.md"], { current: "a.md" })).toBeNull();
+    expect(validateName("x/y.md", [])).toMatch(/cannot contain/);
+    expect(validateName("x/y.md", [], { nested: true })).toBeNull();
+    expect(validateName("x//y.md", [], { nested: true })).toMatch(/empty/);
+    expect(validateName("../y.md", [], { nested: true })).toMatch(/not a valid name/);
+    expect(validateName("   ", [])).toMatch(/required/);
+  });
+});
+
+describe("explorer store — inline editing, reveal and transfer", () => {
+  beforeEach(async () => {
+    await useExplorer.getState().setRoot("/");
+  });
+
+  it("creates the missing folders for a nested name and selects the file", async () => {
+    const res = await useExplorer.getState().createFile("/docs/audits", "deep/er/note.md");
+    expect(res).toEqual({ ok: true, path: "/docs/audits/deep/er/note.md" });
+    const s = useExplorer.getState();
+    expect(s.children.get("/docs/audits")?.find((n) => n.name === "deep")?.isDir).toBe(true);
+    expect(s.children.get("/docs/audits/deep/er")?.map((n) => n.name)).toContain("note.md");
+    expect(s.expanded.has("/docs/audits/deep/er")).toBe(true);
+    expect(s.selectedPath).toBe("/docs/audits/deep/er/note.md");
+  });
+
+  it("beginCreate expands the target folder and opens an edit row", () => {
+    useExplorer.getState().beginCreate("folder", "/docs/reference");
+    const s = useExplorer.getState();
+    expect(s.edit).toEqual({ kind: "new-folder", dir: "/docs/reference" });
+    expect(s.expanded.has("/docs/reference")).toBe(true);
+    s.cancelEdit();
+    expect(useExplorer.getState().edit).toBeNull();
+  });
+
+  it("reveal expands every ancestor and selects the path", async () => {
+    await useExplorer.getState().createFile("/docs/explanation", "hidden/away.md");
+    useExplorer.getState().collapseAll();
+    await useExplorer.getState().reveal("/docs/explanation/hidden/away.md");
+    const s = useExplorer.getState();
+    for (const d of ["/docs", "/docs/explanation", "/docs/explanation/hidden"]) {
+      expect(s.expanded.has(d)).toBe(true);
+    }
+    expect(s.selectedPath).toBe("/docs/explanation/hidden/away.md");
+  });
+
+  it("renaming a file points its open tab at the new path", async () => {
+    await useExplorer.getState().createFile("/docs/audits", "tabbed.md");
+    const id = useDocs.getState().open({ name: "tabbed.md", path: "/docs/audits/tabbed.md", mode: "markdown", raw: "" });
+    const res = await useExplorer.getState().renamePath("/docs/audits/tabbed.md", "renamed.md");
+    expect(res.ok).toBe(true);
+    expect(useDocs.getState().docs[id].path).toBe("/docs/audits/renamed.md");
+    expect(useDocs.getState().docs[id].name).toBe("renamed.md");
+    useDocs.getState().close(id);
+  });
+
+  it("transfer refuses to move a folder into itself", async () => {
+    await useExplorer.getState().createFolder("/docs/audits", "box");
+    await useExplorer.getState().createFolder("/docs/audits/box", "inner");
+    const res = await useExplorer.getState().transfer("cut", "/docs/audits/box", "/docs/audits/box/inner");
+    expect(res.ok).toBe(false);
+  });
+
+  it("duplicate places a copy beside the original", async () => {
+    await useExplorer.getState().createFile("/docs/audits", "twin.md");
+    const res = await useExplorer.getState().duplicate("/docs/audits/twin.md");
+    expect(res.ok).toBe(true);
+    expect(res.path).toMatch(/^\/docs\/audits\/twin copy( \(\d+\))?\.md$/);
+  });
+});
+
+describe("explorer store — moving the root", () => {
+  beforeEach(async () => {
+    await useExplorer.getState().setRoot("/");
+  });
+
+  it("navigateTo moves into a folder and back returns to the parent", async () => {
+    await useExplorer.getState().navigateTo("/docs");
+    expect(useExplorer.getState().root).toBe("/docs");
+    expect(useExplorer.getState().canGoBack()).toBe(true);
+    await useExplorer.getState().goBack();
+    expect(useExplorer.getState().root).toBe("/");
+    await useExplorer.getState().goForward();
+    expect(useExplorer.getState().root).toBe("/docs");
+  });
+
+  it("moving to an ancestor opens the folders down to where the user was", async () => {
+    await useExplorer.getState().navigateTo("/docs/audits");
+    await useExplorer.getState().navigateTo("/");
+    const s = useExplorer.getState();
+    expect(s.root).toBe("/");
+    expect(s.expanded.has("/docs")).toBe(true);
+    expect(s.expanded.has("/docs/audits")).toBe(true);
+  });
+
+  it("navigating to the current root is a no-op", async () => {
+    const before = useExplorer.getState().history.length;
+    await useExplorer.getState().navigateTo("/");
+    expect(useExplorer.getState().history.length).toBe(before);
   });
 });

@@ -15,8 +15,11 @@
     "menubar  menubar  menubar   menubar"
     "rail     sidebar  resizer   main"
     "status   status   status    status";
-  height: 100vh;
-  width: 100vw;
+  /* Percentages, not 100vh/100vw: under View → Zoom (CSS zoom on
+     <html>) viewport units scale with the zoom and the shell would
+     overflow the window. html/body/#root are already 100% tall. */
+  height: 100%;
+  width: 100%;
   background: var(--bg);
   color: var(--text);
   overflow: hidden;

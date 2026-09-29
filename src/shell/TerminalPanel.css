@@ -457,3 +457,12 @@
   border-radius: 0 0 10px 10px;
   background: var(--term-bg);
 }
+
+/* A bell rang in a tab nobody was looking at. */
+.term__tabBell {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}

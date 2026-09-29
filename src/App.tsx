@@ -33,6 +33,7 @@ const ImageViewer = lazy(() => import("@editor/ImageViewer").then((m) => ({ defa
 const ImageEditor = lazy(() => import("@editor/ImageEditor").then((m) => ({ default: m.ImageEditor })));
 const AnimationBuilder = lazy(() => import("@editor/AnimationBuilder").then((m) => ({ default: m.AnimationBuilder })));
 const PdfReader = lazy(() => import("@editor/PdfReader").then((m) => ({ default: m.PdfReader })));
+const MediaPlayer = lazy(() => import("@editor/MediaPlayer").then((m) => ({ default: m.MediaPlayer })));
 import { SplashScreen } from "@shell/SplashScreen";
 import { WelcomeWizard } from "@shell/WelcomeWizard";
 import { OnboardingScreen } from "@shell/Onboarding";
@@ -59,8 +60,10 @@ import {
   startCheckpointMirror,
   flushCheckpoint,
 } from "@shell/checkpointManager";
-import { readFile, recentsAdd, recentsGet, isTauri } from "@bridge/commands";
-import { checkForUpdates, checkForUpdatesOnBoot } from "@bridge/updater";
+import { readFile, recentsAdd, recentsGet, isTauri, openWithOS } from "@bridge/commands";
+import { checkForUpdates, checkForUpdatesOnBoot, getRuntimeVersion } from "@bridge/updater";
+import { APP_VERSION } from "@version";
+import { restoreZoom, zoomIn, zoomOut, zoomReset } from "@shell/zoom";
 import { useSidebarLayout, SIDEBAR_MAX } from "@shell/useSidebarLayout";
 import { buildCommands, bindPalette, type CommandSpec, setCurrentRoot } from "@commands/registry";
 import { Icon } from "@ui/Icon";
@@ -81,6 +84,8 @@ const MODE_ICON: Record<string, string> = {
   imageedit: "mode-imageedit",
   animation: "mode-animation",
   pdf: "mode-pdf",
+  video: "mode-video",
+  audio: "mode-audio",
 };
 
 /* Boot latches. Module scope rather than a ref because StrictMode
@@ -89,6 +94,9 @@ const MODE_ICON: Record<string, string> = {
 let bootStarted = false;
 let teardownAutosave: (() => void) | null = null;
 let teardownCheckpoint: (() => void) | null = null;
+
+/* Help menu links point at the public repository. */
+const REPO_URL = "https://github.com/blackswanalpha/spark-book";
 
 function Shell() {
   const { resolved } = useTheme();
@@ -360,7 +368,17 @@ function Shell() {
       // reports "N", which that branch would otherwise swallow.
       else if (isMod && e.shiftKey && (e.key === "n" || e.key === "N")) { e.preventDefault(); runCommand("window.new"); }
       else if (isMod && !e.shiftKey && (e.key === "n" || e.key === "N")) { e.preventDefault(); runCommand("file.new"); }
+      // Shifted variants first, for the same reason as Shift+N above.
+      else if (isMod && e.shiftKey && (e.key === "w" || e.key === "W")) { e.preventDefault(); runCommand("window.close"); }
       else if (isMod && (e.key === "w" || e.key === "W")) { e.preventDefault(); runCommand("tab.close"); }
+      else if (isMod && e.shiftKey && (e.key === "o" || e.key === "O")) { e.preventDefault(); runCommand("file.openFolder"); }
+      else if (isMod && (e.key === "o" || e.key === "O")) { e.preventDefault(); runCommand("file.open"); }
+      else if (isMod && e.shiftKey && (e.key === "e" || e.key === "E")) { e.preventDefault(); runCommand("project.switch"); }
+      else if (isMod && e.key === ",") { e.preventDefault(); runCommand("view.settings"); }
+      // "+" is what Shift+= reports; accept both so either press zooms in.
+      else if (isMod && (e.key === "=" || e.key === "+")) { e.preventDefault(); runCommand("view.zoomIn"); }
+      else if (isMod && e.key === "-") { e.preventDefault(); runCommand("view.zoomOut"); }
+      else if (isMod && e.key === "0") { e.preventDefault(); runCommand("view.zoomReset"); }
       else if (isMod && (e.key === "b" || e.key === "B") && !e.shiftKey) { e.preventDefault(); sidebar.toggle(); }
       else if (isMod && e.key === "`") { e.preventDefault(); runCommand("view.toggleTerminal"); }
     };
@@ -425,6 +443,67 @@ function Shell() {
     const onWelcome = () => setWelcomeOpen(true);
     window.addEventListener("spark:help:welcome", onWelcome);
     return () => window.removeEventListener("spark:help:welcome", onWelcome);
+  }, []);
+
+  // Help → About / Documentation / Release Notes / Report Issue. Links
+  // leave the app: the host hands them to the OS opener, a browser tab
+  // opens them in a new tab.
+  useEffect(() => {
+    const openUrl = (url: string) => {
+      if (!isTauri) { window.open(url, "_blank", "noopener"); return; }
+      openWithOS(url).catch(() => toast.error("Could not open link", url));
+    };
+    const onAbout = () => {
+      void getRuntimeVersion().then((v) => toast.info(`sparkBook v${v ?? APP_VERSION}`));
+    };
+    const onDocs = () => openUrl(REPO_URL);
+    const onNotes = () => openUrl(`${REPO_URL}/releases`);
+    const onIssue = () => openUrl(`${REPO_URL}/issues/new`);
+    window.addEventListener("spark:help:about", onAbout);
+    window.addEventListener("spark:help:docs", onDocs);
+    window.addEventListener("spark:help:releaseNotes", onNotes);
+    window.addEventListener("spark:help:reportIssue", onIssue);
+    return () => {
+      window.removeEventListener("spark:help:about", onAbout);
+      window.removeEventListener("spark:help:docs", onDocs);
+      window.removeEventListener("spark:help:releaseNotes", onNotes);
+      window.removeEventListener("spark:help:reportIssue", onIssue);
+    };
+  }, [toast]);
+
+  // Window → Minimize / Maximize. Same calls as the title bar buttons;
+  // a browser tab has no window to drive, so both are no-ops there.
+  useEffect(() => {
+    if (!isTauri) return;
+    const onMin = () => {
+      try { getCurrentWindow().minimize().catch(() => {}); } catch { /* window metadata missing */ }
+    };
+    const onMax = async () => {
+      try {
+        const w = getCurrentWindow();
+        if (await w.isMaximized()) await w.unmaximize();
+        else await w.maximize();
+      } catch { /* window metadata missing */ }
+    };
+    window.addEventListener("spark:window:minimize", onMin);
+    window.addEventListener("spark:window:maximize", onMax);
+    return () => {
+      window.removeEventListener("spark:window:minimize", onMin);
+      window.removeEventListener("spark:window:maximize", onMax);
+    };
+  }, []);
+
+  // View → Zoom. The saved level is applied once on mount.
+  useEffect(() => {
+    restoreZoom();
+    window.addEventListener("spark:view:zoom:in", zoomIn);
+    window.addEventListener("spark:view:zoom:out", zoomOut);
+    window.addEventListener("spark:view:zoom:reset", zoomReset);
+    return () => {
+      window.removeEventListener("spark:view:zoom:in", zoomIn);
+      window.removeEventListener("spark:view:zoom:out", zoomOut);
+      window.removeEventListener("spark:view:zoom:reset", zoomReset);
+    };
   }, []);
 
   // Folder open: this is also the project-switch path, so the outgoing
@@ -655,12 +734,14 @@ function Shell() {
                     {activeDoc.mode === "svg"      && <SvgEditor      docId={activeDoc.id} />}
                     {activeDoc.mode === "code"     && <CodeEditor     docId={activeDoc.id} />}
                     {(activeDoc.mode === "image" || activeDoc.mode === "imageedit"
-                      || activeDoc.mode === "animation" || activeDoc.mode === "pdf") && (
+                      || activeDoc.mode === "animation" || activeDoc.mode === "pdf"
+                      || activeDoc.mode === "video" || activeDoc.mode === "audio") && (
                       <Suspense fallback={<div className="app__surface-loading">Loading surface…</div>}>
                         {activeDoc.mode === "image"     && <ImageViewer      docId={activeDoc.id} />}
                         {activeDoc.mode === "imageedit" && <ImageEditor      docId={activeDoc.id} />}
                         {activeDoc.mode === "animation" && <AnimationBuilder docId={activeDoc.id} />}
                         {activeDoc.mode === "pdf"       && <PdfReader        docId={activeDoc.id} />}
+                        {(activeDoc.mode === "video" || activeDoc.mode === "audio") && <MediaPlayer docId={activeDoc.id} />}
                       </Suspense>
                     )}
                   </motion.div>

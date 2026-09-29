@@ -137,13 +137,10 @@ ul.sidebar__list {
   overflow: hidden;
   font-size: var(--size-sm);
 }
-/* The header carries eight fixed controls: two nav arrows and six
-   actions, 22px each. That is about 208px of chrome before the folder
-   name gets a single pixel — more than the pane's own minimum width of
-   180px — so at any narrow size the name was crushed to "PLAN…" while
-   the row itself overflowed. Wrapping is the fix: the actions drop onto
-   their own line rather than squeezing the one thing the header is for.
-   `flex-basis` on the nav is the threshold at which that happens. */
+/* The header is two groups of fixed 22px controls — four for moving
+   around (back, forward, up, project folder) and five actions. When the
+   pane is too narrow for both, the actions wrap onto their own line
+   rather than overflowing; the folder path lives in the breadcrumb. */
 .explorer__header {
   display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-1);
   padding: var(--sp-2) var(--sp-2) var(--sp-1);
@@ -158,16 +155,7 @@ ul.sidebar__list {
 }
 .explorer__nav {
   display: inline-flex; align-items: center; gap: 2px;
-  min-width: 0;
-  /* Keep at least this much for the folder name; below it the actions
-     wrap instead of eating into it. */
-  flex: 1 1 140px;
-}
-.explorer__title {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-  margin-left: 2px;
+  flex: 0 0 auto;
 }
 .explorer__actions {
   margin-left: auto;
@@ -181,7 +169,34 @@ ul.sidebar__list {
 .explorer__nav .icon-btn { width: 22px; height: 22px; }
 .explorer__nav .icon-btn:disabled { opacity: 0.35; cursor: default; }
 
-/* bubble for + create */
+/* Breadcrumb: the root's path, scrolled so its end stays visible. */
+.explorer__crumbs {
+  display: flex; align-items: center; gap: 1px;
+  margin: 0 var(--sp-2) var(--sp-1);
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  font-size: var(--size-xs);
+  color: var(--text-muted);
+}
+.explorer__crumbs::-webkit-scrollbar { display: none; }
+.explorer__crumb {
+  display: inline-flex; align-items: center; gap: 3px;
+  flex: none;
+  padding: 2px 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.explorer__crumb:hover { background: var(--surface-3); color: var(--text); }
+.explorer__crumb:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+.explorer__crumb.is-current { color: var(--text); font-weight: 600; }
+.explorer__crumb-sep { flex: none; color: var(--text-faint); }
+
+/* "More actions" popover */
 .explorer__bubble {
   min-width: 170px;
   padding: 6px;
@@ -212,41 +227,9 @@ ul.sidebar__list {
 }
 .explorer__bubble-item:hover { background: var(--surface-3); color: var(--text); }
 .explorer__bubble-item:active { background: var(--accent-soft); }
+.explorer__bubble-item:disabled { opacity: 0.45; cursor: default; background: transparent; }
+.explorer__bubble-check { margin-left: auto; color: var(--accent); }
 .explorer__bubble-sep { height: 1px; background: var(--border); margin: 4px 6px; border: none; }
-
-/* create dialog */
-.create-dialog { display: flex; flex-direction: column; gap: 14px; }
-.create-dialog__field { display: flex; flex-direction: column; gap: 6px; }
-.create-dialog__label {
-  font-size: var(--size-xs);
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.create-dialog__row { display: flex; gap: 8px; align-items: center; }
-.create-dialog__row .input { flex: 1; min-width: 0; }
-.create-dialog__hint {
-  font-size: var(--size-xs);
-  color: var(--text-faint);
-  line-height: 1.4;
-}
-.create-dialog__hint code {
-  font-family: var(--font-code);
-  background: var(--surface-3);
-  padding: 1px 4px;
-  border-radius: 4px;
-  color: var(--text-muted);
-}
-.create-dialog__preview {
-  font-size: var(--size-xs);
-  color: var(--text-faint);
-  font-family: var(--font-code);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  background: var(--surface-3);
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
-}
 
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -272,28 +255,33 @@ ul.sidebar__list {
   scrollbar-width: thin;
 }
 .explorer__tree:focus-visible { box-shadow: inset var(--focus-ring); border-radius: var(--radius-sm); }
+.explorer__tree.is-drop-target { background: var(--accent-soft); }
+/* Fills the pane so the blank area below the rows still belongs to the
+   root: it takes right-clicks and drops for the open folder. */
+.explorer__canvas { min-height: 100%; }
 
-.tree-root {
-  display: flex; align-items: center; gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-2) var(--sp-1);
-  font-size: var(--size-sm);
-  font-weight: 600;
-  color: var(--text);
-  user-select: none;
+/* Filter box */
+.explorer__filter {
+  display: flex; align-items: center; gap: var(--sp-1);
+  margin: 0 var(--sp-2) var(--sp-1);
+  padding: 0 4px 0 6px;
+  height: 24px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  min-width: 0;
-  overflow: hidden;
+  background: var(--surface-2);
+  color: var(--text-muted);
 }
-.tree-root[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
-.tree-root:focus-visible { box-shadow: var(--focus-ring); }
-/* `min-width: 0` is what actually makes the ellipsis work: a flex item
-   defaults to `min-width: auto`, so it refuses to shrink below its text
-   and pushes the row wider than the pane instead of truncating. */
-.tree-root__name {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  min-width: 0;
-  flex: 1;
+.explorer__filter:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.explorer__filter-icon { flex: none; }
+.explorer__filter-input {
+  flex: 1; min-width: 0;
+  border: none; outline: none; background: transparent;
+  color: var(--text);
+  font: inherit; font-size: var(--size-sm);
 }
+.explorer__filter-input::placeholder { color: var(--text-faint); }
+.explorer__filter-count { flex: none; font-size: var(--size-xs); color: var(--text-faint); }
+.explorer__filter .icon-btn { width: 18px; height: 18px; }
 
 .tree-item {
   display: flex; align-items: center; gap: var(--sp-1);
@@ -333,7 +321,44 @@ ul.sidebar__list {
   min-width: 0;
   flex: 1;
 }
+.tree-item--root { font-weight: 600; }
 .tree-item--hidden .tree-item__name { color: var(--text-muted); font-style: italic; }
+.tree-item.is-cut { opacity: 0.5; }
+.tree-item.is-drop-target { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.tree-item[draggable="true"] { -webkit-user-drag: element; }
+.tree-item__match { background: transparent; color: var(--accent); font-weight: 600; }
+/* Unsaved changes in an open tab. */
+.tree-item__dirty {
+  flex: none; width: 7px; height: 7px; margin-right: 4px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* Inline create / rename row */
+.tree-edit { padding-right: 6px; }
+.tree-edit__row { display: flex; align-items: center; gap: var(--sp-1); height: 24px; }
+.tree-edit__input {
+  flex: 1; min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text);
+  font: inherit; font-size: var(--size-sm);
+  outline: none;
+}
+.tree-edit__row.is-invalid .tree-edit__input { border-color: var(--danger); }
+.tree-edit__error {
+  margin: 2px 0 4px 34px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: var(--size-xs);
+  line-height: 1.35;
+}
 
 .tree-group { min-width: 0; }
 .tree-group[hidden] { display: none; }

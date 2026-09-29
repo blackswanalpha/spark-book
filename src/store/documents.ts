@@ -7,7 +7,7 @@ import { create } from "zustand";
 import { produce, enableMapSet } from "immer";
 import type { Document } from "@ir/types";
 import { newId } from "@ir/ids";
-import { writeFile, writeFileBase64, saveFileDialog, recentsAdd } from "@bridge/commands";
+import { writeFile, writeFileBase64, saveFileDialog, recentsAdd, copyPath } from "@bridge/commands";
 import type { DialogFilter } from "@bridge/commands";
 
 enableMapSet();
@@ -25,10 +25,18 @@ export type DocMode =
   /** Keyframe timeline over a `.sparkanim` JSON scene. */
   | "animation"
   /** Paged PDF reader. */
-  | "pdf";
+  | "pdf"
+  /** Streamed video player. Read-only. */
+  | "video"
+  /** Streamed audio player. Read-only. */
+  | "audio";
 
 /** Modes whose `raw` holds base64-encoded bytes rather than UTF-8 text. */
-export const BINARY_MODES: readonly DocMode[] = ["image", "imageedit", "pdf"];
+export const BINARY_MODES: readonly DocMode[] = ["image", "imageedit", "pdf", "video", "audio"];
+
+/** Modes that play straight from disk. Their `raw` is normally empty: a
+    two-hour film does not belong in a string. They are never written. */
+export const STREAM_MODES: readonly DocMode[] = ["video", "audio"];
 
 export interface OpenDoc {
   id: string;
@@ -52,6 +60,11 @@ export interface OpenDoc {
 /** True when documents in `mode` are stored as base64 bytes. */
 export function isBinaryMode(mode: DocMode): boolean {
   return BINARY_MODES.includes(mode);
+}
+
+/** True when documents in `mode` stream from their path and are read-only. */
+export function isStreamMode(mode: DocMode): boolean {
+  return STREAM_MODES.includes(mode);
 }
 
 /**
@@ -149,11 +162,14 @@ export const useDocs = create<State & Actions>((set, get) => ({
 
   /* Switching between a binary and a text mode would reinterpret base64
      bytes as source text (and back), so the two families are kept apart.
-     image ⇄ imageedit and every text-mode pair stay free. */
+     image ⇄ imageedit and every text-mode pair stay free. A streamed
+     document usually holds no bytes at all, so it cannot become an image
+     or a PDF either. */
   setMode: (id, mode) => set((s) => {
     const doc = s.docs[id];
     if (!doc) return s;
     if (isBinaryMode(mode) !== doc.binary) return s;
+    if ((isStreamMode(mode) || isStreamMode(doc.mode)) && mode !== doc.mode) return s;
     return { docs: { ...s.docs, [id]: { ...doc, mode } } };
   }),
 
@@ -243,6 +259,9 @@ export const useDocs = create<State & Actions>((set, get) => ({
     if (!doc) return { ok: false, reason: "no-active-doc" };
     if (doc.path == null) return { ok: false, reason: "no-path" };
     const path = doc.path;
+    // The file on disk is the whole document and `raw` is usually empty:
+    // writing it would truncate the media file to zero bytes.
+    if (isStreamMode(doc.mode)) return { ok: true, path };
     const written = doc.raw;
     try {
       await (doc.binary ? writeFileBase64(path, written) : writeFile(path, written));
@@ -266,6 +285,24 @@ export const useDocs = create<State & Actions>((set, get) => ({
       filters: opts?.filters,
     });
     if (path == null || path === "") return { ok: false, reason: "cancelled" };
+    // A streamed document has no buffer to write, so Save As is a copy.
+    if (isStreamMode(doc.mode)) {
+      if (doc.path == null) return { ok: false, reason: "no-path" };
+      try {
+        if (path !== doc.path) await copyPath(doc.path, path);
+        get().setPath(id, path);
+        get().setName(id, basename(path));
+        await recentsAdd(path).catch(() => {});
+        return { ok: true, path };
+      } catch (error) {
+        // The host copy never overwrites, even when the dialog asked.
+        const exists = (error as { kind?: string } | null)?.kind === "AlreadyExists";
+        return {
+          ok: false, reason: "error",
+          error: exists ? new Error("A file already exists there. Save the copy under a new name.") : error,
+        };
+      }
+    }
     // Read the buffer *after* the dialog resolves: the user may have kept
     // typing while it was open, and `doc` above is a pre-dialog snapshot.
     const written = get().docs[id]?.raw ?? doc.raw;
