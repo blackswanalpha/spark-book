@@ -149,7 +149,7 @@ async fn read_dir(path: String) -> Result<Vec<DirEntry>, HostError> {
 
 fn read_dir_blocking(path: &str) -> Result<Vec<DirEntry>, HostError> {
     let mut out = vec![];
-    for entry in std::fs::read_dir(&path)? {
+    for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let meta = entry.metadata().ok();
         out.push(DirEntry {
