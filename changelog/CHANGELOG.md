@@ -19,6 +19,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 
 ---
 
+## [0.11.2] — 2026-09-30
+
+Pasting a copied folder into itself is refused instead of copying forever.
+
+### Fixed
+
+- **Copy → Paste of a folder into itself or one of its subfolders shows "Cannot copy … into itself."** The copy was created inside the folder being copied, so it was copied again, level after level, until the path was too long. Only moves were refused before. The host refuses it too, including a destination reached through a symlink into the source.
+
+---
+
 ## [0.11.1] — 2026-09-30
 
 Browsing outside the project no longer freezes or crashes a window.
@@ -426,7 +436,8 @@ Initial public scaffolding. Usable in Vite (browser mock FS) and via Tauri when 
 - Session restore (`app_data_dir/recents.json`, window geometry) — host commands exist, renderer boot wiring is best-effort.
 - Single window, single user, local files only — no sync, no LSP/DAP, no collaboration (by design — see `explanation.md:7`).
 
-[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.11.2
 [0.11.1]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.11.1
 [0.11.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.11.0
 [0.10.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.10.0
