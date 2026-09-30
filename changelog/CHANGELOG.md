@@ -9,6 +9,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 ## [Unreleased]
 
 ### Added
+- Nothing yet.
+
+### Changed
+- Nothing yet.
+
+### Fixed
+- Nothing yet.
+
+---
+
+## [0.10.0] — 2026-09-30
+
+Terminals keep running when hidden and reopen where you left them; projects gain search, tasks and pinning; and rich text stops overwriting Markdown and JSON with HTML.
+
+### Added
 
 - **Go to File** (Ctrl+P). Fuzzy file names across the whole project, with open tabs first. `name:42` opens the file on line 42.
 - **Find in Files** (Ctrl+Shift+F). Literal text across the project, with a match-case toggle (Alt+C). Enter opens the file on the matching line. `.git`, `node_modules`, `target`, `dist`, `build` and hidden folders are skipped.
@@ -374,7 +389,8 @@ Initial public scaffolding. Usable in Vite (browser mock FS) and via Tauri when 
 - Session restore (`app_data_dir/recents.json`, window geometry) — host commands exist, renderer boot wiring is best-effort.
 - Single window, single user, local files only — no sync, no LSP/DAP, no collaboration (by design — see `explanation.md:7`).
 
-[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.10.0
 [0.9.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.9.0
 [0.8.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.8.0
 [0.7.2]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.7.2

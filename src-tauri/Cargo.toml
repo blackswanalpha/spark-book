@@ -1,6 +1,6 @@
 [package]
 name = "spark-book"
-version = "0.9.0"
+version = "0.10.0"
 description = "sparkBook — text, images, animation and PDFs in one window"
 authors = ["sparkBook team"]
 edition = "2021"
