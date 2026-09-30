@@ -496,16 +496,17 @@ export function CodeEditor({ docId, onCursor }: Props) {
         ) : null}
         <span className="code-editor__spacer" />
         <span className="code-editor__status" aria-live="polite">
+          <span className="code-editor__langchip">
+            {currentLangId ? <LangLogo langId={currentLangId} size={14} /> : null}
+            <span>{langLabel}</span>
+          </span>
+          <span className="code-editor__status-sep" />
           <span>Ln {cursor.line}, Col {cursor.col}</span>
           <span className="code-editor__status-sep" />
           <span>UTF-8</span>
         </span>
       </div>
       <div className="code-editor__body">
-        <span className="code-editor__langchip" aria-hidden>
-          {currentLangId ? <LangLogo langId={currentLangId} size={14} /> : null}
-          <span>{langLabel}</span>
-        </span>
         <div ref={ref} className="editor editor--code" />
       </div>
     </div>

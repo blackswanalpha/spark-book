@@ -2,7 +2,7 @@
    sparkBook · src/editor/CodeEditor/CodeEditor.css
    Local styles for the CodeEditor surface:
      • .code-editor__toolbar  – top icon row (32px)
-     • .code-editor__langchip – language label in the gutter
+     • .code-editor__langchip – language label in the toolbar status
    Matches the visual language of .md-editor__toolbar
    (var(--surface-2) bg, var(--border) bottom border).
    ============================================================ */
@@ -92,11 +92,10 @@
   height: 100%;
 }
 
+/* In the toolbar, not over the text: absolutely positioned at the
+   top-left it was wider than the line-number gutter and hid the first
+   characters of line 1. */
 .code-editor__langchip {
-  position: absolute;
-  top: 6px;
-  left: 8px;
-  z-index: 5;
   display: inline-flex;
   align-items: center;
   gap: 5px;

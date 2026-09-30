@@ -37,6 +37,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 - **The file tree spun forever on a folder it could not read.** The reason, such as *Permission denied*, is now shown.
 - **A crash, logout or killed process could restore an older workspace** than the one last saved. On launch the newer of the two saved copies wins.
 - A focused terminal swallowed the command palette, project switcher and terminal toggle shortcuts.
+- **The code editor's language label covered the start of line 1.** It sat over the text, wider than the line-number gutter. It now sits in the editor's toolbar beside the cursor position.
+- **Every menu click popped a "Command dispatched" notification.** Menus now just run the command.
 
 ---
 

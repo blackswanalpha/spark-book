@@ -14,7 +14,8 @@
        Alt+<letter> mnemonics (top-level + item jump).
      • Dispatches every command through the same "spark:command"
        CustomEvent channel App.tsx listens to, then closes the
-       dropdown and shows a toast.
+       dropdown. No toast: the command's own effect is the feedback,
+       and a "dispatched" notice on every click was noise.
      • Uses theme tokens, motion primitives, Icon, KbdChord.
      • data-tauri-drag-region={false} so it does NOT trigger
        Tauri window drag (TitleBar handles its own drag region).
@@ -23,7 +24,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence, popoverVariants, staggerItem, staggerParent } from "@motion/index";
 import { Icon } from "@ui/Icon";
 import { KbdChord } from "@ui/Kbd";
-import { useToast } from "@ui/Toast";
 import type { CommandSpec } from "@commands/registry";
 import "./MenuBar.css";
 
@@ -87,29 +87,7 @@ const DOC_GATED = new Set<string>([
   "format.quote",
 ]);
 
-/* Commands whose own run() does the talking — MenuBar should not
-   also pop a toast. Keeps the UI quiet for self-explanatory ones. */
-const SILENT_COMMANDS = new Set<string>([
-  "project.switch",
-  "project.close",
-  "project.quickOpen",
-  "project.findInFiles",
-  "project.runTask",
-  "project.rerunTask",
-  "project.togglePin",
-  "terminal.next",
-  "terminal.prev",
-  "terminal.rename",
-  "terminal.close",
-  "file.recent",
-  "help.about",
-  "help.docs",
-  "help.releaseNotes",
-  "help.reportIssue",
-]);
-
 export function MenuBar({ commands, hasActiveDoc = true }: MenuBarProps) {
-  const toast = useToast();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const topRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const itemRefs = useRef<Array<Array<HTMLButtonElement | null>>>([]);
@@ -160,12 +138,8 @@ export function MenuBar({ commands, hasActiveDoc = true }: MenuBarProps) {
   const invoke = useCallback((cmd: CommandSpec) => {
     if (isDisabled(cmd)) return;
     window.dispatchEvent(new CustomEvent("spark:command", { detail: { id: cmd.id } }));
-    if (!SILENT_COMMANDS.has(cmd.id)) {
-      const cat = cmd.category ?? "";
-      toast.info(`${cat} → ${cmd.title}`, "Command dispatched");
-    }
     closeMenu();
-  }, [closeMenu, isDisabled, toast]);
+  }, [closeMenu, isDisabled]);
 
   /* ---- hover-to-switch with grace period ---- */
   const scheduleHoverSwitch = useCallback((index: number) => {
