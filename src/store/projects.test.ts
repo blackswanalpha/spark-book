@@ -14,6 +14,7 @@ import {
   MAX_RESTORE_TABS,
   MAX_EXPANDED,
   SCHEMA_VERSION,
+  byPinThenRecency,
   type ProjectsCache,
 } from "./projects";
 
@@ -232,5 +233,47 @@ describe("localStorage mirror", () => {
     useProjects.getState().saveWorkspace(ws);
     const raw = JSON.parse(localStorage.getItem(STORE_KEY)!);
     expect(coerce(raw).projects[0].workspace).toEqual(coerceWorkspace(ws));
+  });
+});
+
+describe("pinning", () => {
+  it("lists pinned projects first and keeps the pin through coercion", () => {
+    const c = coerce(cacheOf([makeProject("/new", 30), { ...makeProject("/old", 10), pinned: true }, makeProject("/mid", 20)]));
+    expect(c.projects.map((p) => p.id)).toEqual(["/old", "/new", "/mid"]);
+    expect(c.projects[0].pinned).toBe(true);
+    expect("pinned" in c.projects[1]).toBe(false);
+  });
+
+  it("never evicts a pinned project for age", () => {
+    const many = Array.from({ length: MAX_PROJECTS + 5 }, (_, i) => makeProject(`/p${i}`, 100 + i));
+    const c = coerce(cacheOf([...many, { ...makeProject("/ancient", 1), pinned: true }]));
+    expect(c.projects).toHaveLength(MAX_PROJECTS);
+    expect(c.projects[0].id).toBe("/ancient");
+  });
+
+  it("toggles a pin and re-sorts", () => {
+    useProjects.setState({ projects: [makeProject("/a", 20), makeProject("/b", 10)] });
+    const pinned = useProjects.getState().togglePin("/b");
+    expect(pinned?.pinned).toBe(true);
+    expect(useProjects.getState().projects.map((p) => p.id)).toEqual(["/b", "/a"]);
+    const unpinned = useProjects.getState().togglePin("/b");
+    expect(unpinned?.pinned).toBeUndefined();
+    expect(useProjects.getState().projects.map((p) => p.id)).toEqual(["/a", "/b"]);
+    expect(useProjects.getState().togglePin("/missing")).toBeNull();
+  });
+
+  it("orders by pin, then recency", () => {
+    const list = [makeProject("/x", 5), { ...makeProject("/y", 1), pinned: true }, makeProject("/z", 9)];
+    expect([...list].sort(byPinThenRecency).map((p) => p.id)).toEqual(["/y", "/z", "/x"]);
+  });
+});
+
+describe("terminal tab names", () => {
+  it("keeps a tab's name through coercion and drops a blank one", () => {
+    const ws = coerceWorkspace({
+      terminal: { tabs: [{ cwd: "/a", privilege: "user", label: "Terminal 1", name: "server" }, { cwd: "/b", label: "Terminal 2", name: "" }] },
+    });
+    expect(ws.terminal.tabs[0].name).toBe("server");
+    expect("name" in ws.terminal.tabs[1]).toBe(false);
   });
 });

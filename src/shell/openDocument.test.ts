@@ -17,7 +17,7 @@ vi.mock("@bridge/commands", async (importOriginal) => {
 
 import { readFile, readFileBase64, recentsAdd } from "@bridge/commands";
 import { useDocs } from "@store/documents";
-import { openPath } from "./openDocument";
+import { openPath, findOpenDoc } from "./openDocument";
 
 const mockedReadFile = vi.mocked(readFile);
 const mockedReadBase64 = vi.mocked(readFileBase64);
@@ -109,5 +109,20 @@ describe("openPath", () => {
     mockedReadFile.mockRejectedValueOnce({ kind: "NotFound", path: "/gone.md" });
     await expect(openPath("/gone.md")).rejects.toMatchObject({ kind: "NotFound" });
     expect(useDocs.getState().order).toHaveLength(0);
+  });
+});
+
+describe("openPath — one tab per file", () => {
+  it("focuses the open tab instead of reading the file into a second one", async () => {
+    const first = await openPath("/notes.md");
+    await openPath("/other.md");
+    mockedReadFile.mockClear();
+    const again = await openPath("/notes.md");
+    expect(again.id).toBe(first.id);
+    expect(useDocs.getState().order).toHaveLength(2);
+    expect(useDocs.getState().active).toBe(first.id);
+    expect(mockedReadFile).not.toHaveBeenCalled();
+    expect(findOpenDoc("/other.md")).not.toBeNull();
+    expect(findOpenDoc("/nope.md")).toBeNull();
   });
 });

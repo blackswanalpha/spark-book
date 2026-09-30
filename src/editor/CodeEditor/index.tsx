@@ -64,7 +64,7 @@ import { Button } from "@ui/Button";
 import { LangLogo } from "@ui/LangLogo";
 import "../editor.css";
 import "./CodeEditor.css";
-import { restoreViewState, trackScroll } from "./viewState";
+import { onRevealRequest, restoreViewState, trackScroll } from "./viewState";
 import { bindEditEvents } from "./editEvents";
 
 /* ----------------------------------------------------------------
@@ -282,9 +282,11 @@ export function CodeEditor({ docId, onCursor }: Props) {
     viewRef.current = v;
     const cancelRestore = restoreViewState(v, restoreRef.current.cursor, restoreRef.current.scrollTop);
     const stopTracking = trackScroll(v, (top) => setScroll(docId, top));
+    const stopReveal = onRevealRequest(docId, () => viewRef.current);
     return () => {
       cancelRestore();
       stopTracking();
+      stopReveal();
       // One last read before the view goes: an inactive tab is unmounted,
       // so this is the only chance to record where it was left.
       setScroll(docId, Math.round(v.scrollDOM.scrollTop));

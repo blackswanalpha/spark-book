@@ -22,7 +22,7 @@ import { Button } from "@ui/Button";
 import { motion } from "@motion/index";
 import { renderMd } from "./renderMd";
 import "../editor.css";
-import { restoreViewState, trackScroll } from "@editor/CodeEditor/viewState";
+import { onRevealRequest, restoreViewState, trackScroll } from "@editor/CodeEditor/viewState";
 import { bindEditEvents } from "@editor/CodeEditor/editEvents";
 
 export function MarkdownEditor({ docId }: { docId: string }) {
@@ -84,9 +84,11 @@ export function MarkdownEditor({ docId }: { docId: string }) {
     viewRef.current = v;
     const cancelRestore = restoreViewState(v, restoreRef.current.cursor, restoreRef.current.scrollTop);
     const stopTracking = trackScroll(v, (top) => setScroll(docId, top));
+    const stopReveal = onRevealRequest(docId, () => viewRef.current);
     return () => {
       cancelRestore();
       stopTracking();
+      stopReveal();
       setScroll(docId, Math.round(v.scrollDOM.scrollTop));
       v.destroy();
       viewRef.current = null;

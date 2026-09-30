@@ -71,6 +71,8 @@ export interface PtyFrame {
   /** Kitty keyboard flags in force; bit 0 = disambiguate escape codes. */
   kittyFlags?: number;
   seq: number;
+  /** The shell's working directory now, which `cd` moves. */
+  cwd?: string;
 }
 
 /** An OSC 52 clipboard write from the program. */
@@ -462,6 +464,31 @@ export function clipboardIntent(
     if (e.ctrlKey && !e.shiftKey) return "copy";
     if (e.shiftKey && !e.ctrlKey) return "paste";
   }
+  return null;
+}
+
+/**
+ * Presses the application keeps even while a shell has the keyboard.
+ *
+ * Without these a focused terminal was a trap: Ctrl+` sent NUL to the
+ * shell instead of closing the panel, and the palette and project
+ * switcher could not be reached until the mouse moved focus elsewhere.
+ * Kept to chords shells have no real use for; Ctrl+P and Ctrl+E stay
+ * readline's (previous history, end of line).
+ *
+ * "app" means: do not encode, let the window's keybindings have it.
+ */
+export type AppShortcut = "app" | "next-tab" | "prev-tab" | null;
+
+export function appShortcut(
+  e: Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey">,
+): AppShortcut {
+  if (!e.ctrlKey || e.altKey || e.metaKey) return null;
+  if (e.code === "Backquote") return "app";
+  if (e.key === "PageDown" && !e.shiftKey) return "next-tab";
+  if (e.key === "PageUp" && !e.shiftKey) return "prev-tab";
+  if (e.shiftKey && (e.key === "P" || e.key === "p")) return "app";
+  if (e.shiftKey && (e.key === "E" || e.key === "e")) return "app";
   return null;
 }
 

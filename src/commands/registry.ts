@@ -13,6 +13,9 @@ import {
 import { openPath } from "@shell/openDocument";
 import { checkpointOpenWindow } from "@bridge/checkpoint";
 import { useProjects } from "@store/projects";
+import { mirrorProject } from "@shell/checkpointManager";
+import { projectRoot } from "@shell/project/ProjectPicker";
+import { lastTaskFor, runTask } from "@shell/project/tasks";
 import { emptyScene, serializeScene } from "@editor/AnimationBuilder/model";
 
 export interface CommandSpec {
@@ -70,8 +73,8 @@ export function buildCommands(): CommandSpec[] {
       run: () => { useTerminal.getState().toggle(); },
     },
     {
-      id: "view.terminalNew", title: "New Terminal", category: "View",
-      icon: "plus",
+      id: "view.terminalNew", title: "New Terminal", category: "Terminal",
+      icon: "plus", shortcut: mod("Shift+`"),
       keywords: ["terminal", "shell", "new", "tab", "split", "add"],
       run: () => {
         // The panel derives the directory from the explorer, so it — not
@@ -81,7 +84,38 @@ export function buildCommands(): CommandSpec[] {
       },
     },
     {
-      id: "view.terminalRoot", title: "Terminal: Toggle Root Shell", category: "View",
+      id: "terminal.next", title: "Terminal: Next Tab", category: "Terminal",
+      icon: "arrow-right", shortcut: mod("PageDown"),
+      keywords: ["terminal", "tab", "next", "switch", "shell"],
+      run: () => { window.dispatchEvent(new CustomEvent("spark:terminal:cycle", { detail: { step: 1 } })); },
+    },
+    {
+      id: "terminal.prev", title: "Terminal: Previous Tab", category: "Terminal",
+      icon: "arrow-left", shortcut: mod("PageUp"),
+      keywords: ["terminal", "tab", "previous", "switch", "shell"],
+      run: () => { window.dispatchEvent(new CustomEvent("spark:terminal:cycle", { detail: { step: -1 } })); },
+    },
+    {
+      id: "terminal.rename", title: "Terminal: Rename Tab…", category: "Terminal",
+      icon: "pencil",
+      keywords: ["terminal", "tab", "rename", "name", "label"],
+      run: () => {
+        useTerminal.getState().open();
+        // The panel mounts its tab strip on open; ask on the next frame.
+        requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("spark:terminal:rename")));
+      },
+    },
+    {
+      id: "terminal.close", title: "Terminal: Close Tab", category: "Terminal",
+      icon: "close",
+      keywords: ["terminal", "tab", "close", "kill", "exit", "shell"],
+      run: () => {
+        const s = activeSession();
+        if (s) useTerminal.getState().closeSession(s.id);
+      },
+    },
+    {
+      id: "view.terminalRoot", title: "Terminal: Toggle Root Shell", category: "Terminal",
       icon: "alert",
       keywords: ["root", "sudo", "pkexec", "admin", "superuser", "elevate"],
       run: () => {
@@ -219,6 +253,45 @@ export function buildCommands(): CommandSpec[] {
       icon: "close",
       keywords: ["project", "workspace", "close folder"],
       run: () => { window.dispatchEvent(new CustomEvent("spark:project:close")); },
+    },
+    {
+      id: "project.quickOpen", title: "Go to File…", category: "File",
+      icon: "search", shortcut: mod("P"),
+      keywords: ["quick open", "file", "find file", "fuzzy", "go to", "jump"],
+      run: () => { window.dispatchEvent(new CustomEvent("spark:project:picker", { detail: { mode: "files" } })); },
+    },
+    {
+      id: "project.findInFiles", title: "Find in Files…", category: "Edit",
+      icon: "search", shortcut: mod("Shift+F"),
+      keywords: ["search", "grep", "project", "find", "text", "across"],
+      run: () => { window.dispatchEvent(new CustomEvent("spark:project:picker", { detail: { mode: "search" } })); },
+    },
+    {
+      id: "project.runTask", title: "Run Task…", category: "Terminal",
+      icon: "terminal", shortcut: mod("Shift+B"),
+      keywords: ["task", "script", "npm", "make", "cargo", "build", "test", "run"],
+      run: () => { window.dispatchEvent(new CustomEvent("spark:project:picker", { detail: { mode: "tasks" } })); },
+    },
+    {
+      id: "project.rerunTask", title: "Rerun Last Task", category: "Terminal",
+      icon: "refresh",
+      keywords: ["task", "again", "repeat", "rerun", "build", "test"],
+      run: () => {
+        const root = projectRoot();
+        const last = root ? lastTaskFor(root) : null;
+        if (root && last) runTask(root, last);
+        else window.dispatchEvent(new CustomEvent("spark:project:picker", { detail: { mode: "tasks" } }));
+      },
+    },
+    {
+      id: "project.togglePin", title: "Pin / Unpin Current Project", category: "File",
+      icon: "pin",
+      keywords: ["project", "pin", "favourite", "favorite", "keep"],
+      run: () => {
+        const id = useProjects.getState().activeId;
+        const updated = id ? useProjects.getState().togglePin(id) : null;
+        if (updated) void mirrorProject(updated);
+      },
     },
     {
       id: "file.recent", title: "Open Recent File", category: "File",

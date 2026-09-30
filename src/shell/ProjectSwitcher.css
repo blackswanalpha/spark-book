@@ -39,6 +39,25 @@
   background: var(--bg-hover);
 }
 
+.projsw__row--cursor {
+  background: var(--bg-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.projsw__row--missing .projsw__path {
+  color: var(--danger);
+}
+
+/* A long path must not squeeze the folder icon. */
+.projsw__main > .icon { flex: none; }
+
+.projsw__pinMark {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: -1px;
+  color: var(--text-muted);
+}
+
 .projsw__row--active .projsw__name {
   color: var(--accent);
   font-weight: 600;

@@ -44,6 +44,7 @@ const TOP_LEVEL_ORDER: { id: string; label: string; mnemonic: string }[] = [
   { id: "Edit",      label: "Edit",      mnemonic: "E" },
   { id: "Selection", label: "Selection", mnemonic: "S" },
   { id: "View",      label: "View",      mnemonic: "V" },
+  { id: "Terminal",  label: "Terminal",  mnemonic: "T" },
   { id: "Format",    label: "Format",    mnemonic: "O" }, // "O" used for F**o**rmat (F taken by File)
   { id: "Window",    label: "Window",    mnemonic: "W" },
   { id: "Help",      label: "Help",      mnemonic: "H" },
@@ -91,6 +92,15 @@ const DOC_GATED = new Set<string>([
 const SILENT_COMMANDS = new Set<string>([
   "project.switch",
   "project.close",
+  "project.quickOpen",
+  "project.findInFiles",
+  "project.runTask",
+  "project.rerunTask",
+  "project.togglePin",
+  "terminal.next",
+  "terminal.prev",
+  "terminal.rename",
+  "terminal.close",
   "file.recent",
   "help.about",
   "help.docs",

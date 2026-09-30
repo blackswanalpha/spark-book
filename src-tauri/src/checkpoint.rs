@@ -107,6 +107,9 @@ pub struct ProjectRecord {
     /// Label of the window that last wrote this row.
     #[serde(default)]
     pub writer: String,
+    /// Kept at the top of the project list and never pruned for age.
+    #[serde(default)]
+    pub pinned: bool,
     /// Opaque to the host: the renderer owns the workspace shape and
     /// validates it on the way back in.
     #[serde(default)]
@@ -127,6 +130,8 @@ pub struct ProjectSave {
     pub rev: u64,
     #[serde(default)]
     pub writer: String,
+    #[serde(default)]
+    pub pinned: bool,
     #[serde(default)]
     pub workspace: Value,
 }
@@ -218,7 +223,12 @@ impl Inner {
         // rows and a table longer than the cap.
         let mut seen = HashSet::new();
         file.projects.retain(|p| !p.id.is_empty() && seen.insert(p.id.clone()));
-        file.projects.sort_by(|a, b| b.last_opened.cmp(&a.last_opened));
+        // Pinned rows first, so the cap never drops one for age.
+        file.projects.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.last_opened.cmp(&a.last_opened))
+        });
         file.projects.truncate(MAX_PROJECTS);
 
         let mut seen = HashSet::new();
@@ -369,6 +379,7 @@ impl Inner {
             last_opened: save.last_opened.max(0),
             rev: save.rev,
             writer: save.writer,
+            pinned: save.pinned,
             workspace: save.workspace,
         };
         let rev = row.rev;
@@ -410,7 +421,8 @@ impl Inner {
         let mut kept: Vec<ProjectRecord> = Vec::new();
         let mut spill: Vec<ProjectRecord> = Vec::new();
         for p in std::mem::take(&mut self.file.projects) {
-            if pinned.contains(&p.id) {
+            // Bound to a live window, or pinned by the user.
+            if pinned.contains(&p.id) || p.pinned {
                 kept.push(p);
             } else {
                 spill.push(p);
@@ -694,6 +706,7 @@ mod tests {
             last_opened: T,
             rev,
             writer: writer.into(),
+            pinned: false,
             workspace: json!({ "tabs": [] }),
         }
     }
@@ -953,6 +966,23 @@ mod tests {
             inner.file.projects.iter().any(|p| p.id == "/pinned"),
             "the project a live window shows is never evicted"
         );
+    }
+
+    #[test]
+    fn a_project_the_user_pinned_is_never_evicted() {
+        let mut inner = Inner::open(None, T);
+        let mut kept = proj("/kept", "main", 1);
+        kept.last_opened = 0;
+        kept.pinned = true;
+        inner.save_project(kept, T);
+        for i in 0..(MAX_PROJECTS + 5) {
+            let mut p = proj(&format!("/p{i}"), "main", 1);
+            p.last_opened = 1_000 + i as i64;
+            inner.save_project(p, T);
+        }
+        assert_eq!(inner.file.projects.len(), MAX_PROJECTS);
+        let row = inner.file.projects.iter().find(|p| p.id == "/kept");
+        assert!(row.is_some_and(|p| p.pinned));
     }
 
     #[test]

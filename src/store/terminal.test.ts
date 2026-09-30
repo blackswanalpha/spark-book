@@ -167,3 +167,81 @@ describe("setPanelRect", () => {
     expect(useTerminal.getState().panelPlaced).toBe(true);
   });
 });
+
+describe("live cwd, names and navigation", () => {
+  const three = () =>
+    useTerminal.getState().restoreTabs(
+      [
+        { cwd: "/a", privilege: "user", label: "Terminal 1" },
+        { cwd: "/b", privilege: "user", label: "Terminal 2", name: "server" },
+        { cwd: "/c", privilege: "user", label: "Terminal 3" },
+      ],
+      0,
+      4,
+      true,
+    );
+
+  it("restores a tab's name", () => {
+    three();
+    expect(useTerminal.getState().sessions.map((s) => s.name ?? null)).toEqual([null, "server", null]);
+  });
+
+  it("records where a shell moved without touching the spawn cwd", () => {
+    three();
+    const id = useTerminal.getState().sessions[0].id;
+    useTerminal.getState().setSessionCwd(id, "/a/sub");
+    const s = useTerminal.getState().sessions[0];
+    expect(s.liveCwd).toBe("/a/sub");
+    expect(s.cwd).toBe("/a");
+  });
+
+  it("does not notify subscribers when a frame repeats the same cwd or title", () => {
+    three();
+    const id = useTerminal.getState().sessions[0].id;
+    useTerminal.getState().setSessionCwd(id, "/a/sub");
+    useTerminal.getState().setSessionTitle(id, "bash");
+    let calls = 0;
+    const unsub = useTerminal.subscribe(() => calls++);
+    useTerminal.getState().setSessionCwd(id, "/a/sub");
+    useTerminal.getState().setSessionTitle(id, "bash");
+    unsub();
+    expect(calls).toBe(0);
+  });
+
+  it("cycles through tabs in both directions, wrapping", () => {
+    three();
+    const ids = useTerminal.getState().sessions.map((s) => s.id);
+    useTerminal.getState().cycleSession(-1);
+    expect(useTerminal.getState().activeId).toBe(ids[2]);
+    useTerminal.getState().cycleSession(1);
+    expect(useTerminal.getState().activeId).toBe(ids[0]);
+  });
+
+  it("renames a tab and clears the name with a blank", () => {
+    three();
+    const id = useTerminal.getState().sessions[0].id;
+    useTerminal.getState().renameSession(id, "  build   watcher ");
+    expect(useTerminal.getState().sessions[0].name).toBe("build watcher");
+    useTerminal.getState().renameSession(id, "   ");
+    expect(useTerminal.getState().sessions[0].name).toBeNull();
+  });
+
+  it("drops a task's command when the shell flips to root", () => {
+    useTerminal.getState().addSession("/p", { name: "npm: build", initialInput: "npm run build\r" });
+    const id = useTerminal.getState().sessions[0].id;
+    useTerminal.getState().setPrivilege(id, "root");
+    expect(useTerminal.getState().sessions[0].initialInput).toBeUndefined();
+  });
+
+  it("lands Open-in-Terminal on a shell that is still in the folder, not one that left", () => {
+    three();
+    const [first] = useTerminal.getState().sessions;
+    useTerminal.getState().setSessionCwd(first.id, "/elsewhere");
+    useTerminal.getState().openAt("/a");
+    const s = useTerminal.getState();
+    expect(s.sessions).toHaveLength(4);
+    expect(s.activeId).toBe(s.sessions[3].id);
+    useTerminal.getState().openAt("/elsewhere");
+    expect(useTerminal.getState().activeId).toBe(first.id);
+  });
+});

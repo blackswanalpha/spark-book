@@ -1,0 +1,52 @@
+/* Project picker — extends the command palette (CommandPalette.css). */
+
+.pp__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pp__search > .input { flex: 1 1 auto; min-width: 0; }
+
+.pp__toggle {
+  flex: none;
+  height: 28px;
+  min-width: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--size-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.pp__toggle:hover { background: var(--surface-2); color: var(--text); }
+.pp__toggle.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.pp__toggle:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+
+/* A search hit's line of code reads better in the code face. */
+.pp__item .pp__title { white-space: pre; }
+.pp .cp__icon + .pp__title { font-variant-ligatures: none; }
+
+.pp__detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;          /* keep the file end of a long path visible */
+  text-align: left;
+  color: var(--text-faint);
+  font-size: var(--size-xs);
+}
+.pp__detail > * { direction: ltr; unicode-bidi: isolate; }
+
+.pp__hl {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.pp__status { margin-left: auto; }

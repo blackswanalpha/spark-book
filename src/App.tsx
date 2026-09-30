@@ -60,7 +60,7 @@ import {
   startCheckpointMirror,
   flushCheckpoint,
 } from "@shell/checkpointManager";
-import { readFile, recentsAdd, recentsGet, isTauri, openWithOS } from "@bridge/commands";
+import { readFile, recentsAdd, recentsGet, isTauri, openWithOS, stat } from "@bridge/commands";
 import { checkForUpdates, checkForUpdatesOnBoot, getRuntimeVersion } from "@bridge/updater";
 import { APP_VERSION } from "@version";
 import { restoreZoom, zoomIn, zoomOut, zoomReset } from "@shell/zoom";
@@ -71,6 +71,7 @@ import OpenDialog from "@ui/OpenDialog";
 import SaveAsModal from "@shell/SaveAsModal";
 import UnsavedChangesModal, { type UnsavedChoice } from "@shell/UnsavedChangesModal";
 import ProjectSwitcher from "@shell/ProjectSwitcher";
+import ProjectPicker from "@shell/project/ProjectPicker";
 import "./App.css";
 
 /** Tab icon per document mode. */
@@ -363,6 +364,11 @@ function Shell() {
     const onKey = (e: KeyboardEvent) => {
       const isMod = isMac() ? e.metaKey : e.ctrlKey;
       if (isMod && e.shiftKey && (e.key === "P" || e.key === "p")) { e.preventDefault(); setPaletteOpen(true); }
+      // Ctrl+P: Quick Open. Before Ctrl+S etc. only for readability — no
+      // other branch takes an unshifted P.
+      else if (isMod && !e.shiftKey && !e.altKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); runCommand("project.quickOpen"); }
+      else if (isMod && e.shiftKey && (e.key === "f" || e.key === "F")) { e.preventDefault(); runCommand("project.findInFiles"); }
+      else if (isMod && e.shiftKey && (e.key === "b" || e.key === "B")) { e.preventDefault(); runCommand("project.runTask"); }
       else if (isMod && (e.key === "s" || e.key === "S")) { e.preventDefault(); runCommand("file.save"); }
       // Before the new-document branch: with Shift held the browser
       // reports "N", which that branch would otherwise swallow.
@@ -380,7 +386,9 @@ function Shell() {
       else if (isMod && e.key === "-") { e.preventDefault(); runCommand("view.zoomOut"); }
       else if (isMod && e.key === "0") { e.preventDefault(); runCommand("view.zoomReset"); }
       else if (isMod && (e.key === "b" || e.key === "B") && !e.shiftKey) { e.preventDefault(); sidebar.toggle(); }
-      else if (isMod && e.key === "`") { e.preventDefault(); runCommand("view.toggleTerminal"); }
+      // By physical key: with Shift held the browser reports "~", not "`".
+      else if (isMod && e.shiftKey && e.code === "Backquote") { e.preventDefault(); runCommand("view.terminalNew"); }
+      else if (isMod && (e.key === "`" || e.code === "Backquote")) { e.preventDefault(); runCommand("view.toggleTerminal"); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -523,6 +531,16 @@ function Shell() {
       }
 
       void (async () => {
+        // A remembered folder that was deleted or unmounted since: say
+        // so and stay put. Switching anyway tore down the open project
+        // and left the tree spinning on a directory that is not there.
+        if (path) {
+          const ok = await stat(path).then((st) => st.isDir, () => false);
+          if (!ok) {
+            toast.error("Folder not found", `${path} no longer exists. Remove it from the project list if it is gone for good.`);
+            return;
+          }
+        }
         flushWorkspace();
         await flushCheckpoint();
         teardownAutosave?.();
@@ -810,6 +828,7 @@ function Shell() {
       <WelcomeWizard open={welcomeOpen} onOpenChange={setWelcomeOpen} />
       <OpenDialog />
       <ProjectSwitcher />
+      <ProjectPicker />
       <SaveAsModal
         open={saveAsOpen}
         onOpenChange={(o) => {

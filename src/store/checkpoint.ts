@@ -77,6 +77,8 @@ export interface ProjectRecord {
   rev: number;
   /** Label of the window that last wrote this row. */
   writer: string;
+  /** Kept at the top of the project list. */
+  pinned?: boolean;
   workspace: Workspace;
 }
 
@@ -185,6 +187,7 @@ export function coerceProjectRecord(raw: unknown): ProjectRecord | null {
     lastOpened: Math.max(0, num(r.lastOpened, 0)),
     rev: uint(r.rev, 0),
     writer: str(r.writer) ?? MAIN_LABEL,
+    pinned: r.pinned === true,
     workspace: coerceWorkspace(r.workspace),
   };
 }
@@ -208,7 +211,8 @@ export function coerceCheckpoint(raw: unknown): Checkpoint {
       projects.push(p);
     }
   }
-  projects.sort((a, b) => b.lastOpened - a.lastOpened);
+  // Pinned rows first, so the cap never drops one for age.
+  projects.sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true) || b.lastOpened - a.lastOpened);
   projects.length = Math.min(projects.length, MAX_CHECKPOINT_PROJECTS);
 
   const windows: WindowRecord[] = [];
@@ -353,6 +357,7 @@ export interface ProjectSave {
   lastOpened: number;
   rev: number;
   writer: string;
+  pinned?: boolean;
   workspace: Workspace;
 }
 
@@ -400,6 +405,7 @@ export function saveProject(s: Session, save: ProjectSave, now = Date.now()): Sa
     lastOpened: Math.max(0, num(save.lastOpened, now)),
     rev: uint(save.rev, 0),
     writer,
+    pinned: save.pinned === true,
     workspace: save.workspace ?? EMPTY_WORKSPACE,
   };
   if (idx >= 0) file.projects[idx] = row;
@@ -432,7 +438,8 @@ export function pruneProjects(projects: ProjectRecord[], windows: WindowRecord[]
 
   const kept: ProjectRecord[] = [];
   const spill: ProjectRecord[] = [];
-  for (const p of sorted) (pinned.has(p.id) ? kept : spill).push(p);
+  // Bound to a live window, or pinned by the user.
+  for (const p of sorted) (pinned.has(p.id) || p.pinned ? kept : spill).push(p);
   for (const p of spill) {
     if (kept.length >= MAX_CHECKPOINT_PROJECTS) break;
     kept.push(p);
