@@ -82,7 +82,15 @@ fn skip_dir(name: &str) -> bool {
 /// Depth-first walk calling `visit` for every regular file. Returns
 /// true when a bound stopped the walk early. `visit` returns false to
 /// stop as well.
+///
+/// Directories on another filesystem are not entered, so a root of `/`
+/// never walks `/proc` or `/sys` or waits on a FUSE or network mount.
 fn walk(root: &Path, mut visit: impl FnMut(&Path) -> bool) -> bool {
+    #[cfg(unix)]
+    let root_dev = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(root).ok().map(|m| m.dev())
+    };
     let started = Instant::now();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     let mut visited = 0usize;
@@ -100,6 +108,13 @@ fn walk(root: &Path, mut visit: impl FnMut(&Path) -> bool) -> bool {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if ft.is_dir() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if entry.metadata().ok().map(|m| m.dev()) != root_dev {
+                        continue;
+                    }
+                }
                 if !skip_dir(&name) {
                     subdirs.push(entry.path());
                 }
@@ -188,13 +203,18 @@ fn preview(line: &str) -> String {
 /// (a NUL byte in the first 8 KiB, the heuristic git and grep use).
 fn read_text(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
-    if meta.len() > SEARCH_MAX_FILE {
+    if !meta.is_file() || meta.len() > SEARCH_MAX_FILE {
         return None;
     }
-    // At most SEARCH_MAX_FILE by the check above, so it always fits.
+    // The read is capped as well: a file reached through a symlink can be
+    // a procfs file that reports 0 bytes and reads back gigabytes.
     let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
-    std::fs::File::open(path).ok()?.read_to_end(&mut bytes).ok()?;
-    if bytes[..bytes.len().min(8192)].contains(&0) {
+    std::fs::File::open(path)
+        .ok()?
+        .take(SEARCH_MAX_FILE + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > SEARCH_MAX_FILE || bytes[..bytes.len().min(8192)].contains(&0) {
         return None;
     }
     Some(String::from_utf8_lossy(&bytes).into_owned())
