@@ -3,7 +3,7 @@
    Hairline plugin rail pinned left-of-explorer.
    - 51px wide, icons-only vertical strip
    - Hairline right border (1px solid var(--border))
-   - Extensible plugin registry (first item is terminal)
+   - Extensible plugin registry (terminal, then projects)
    - Settings sits alone at the foot of the rail: it is not a
      plugin, and separating it keeps the registry above honest
      as more plugins arrive.
@@ -15,7 +15,7 @@ import "./PluginRail.css";
 import { TerminalDialog } from "./TerminalPanel";
 import { SettingsDialog } from "./Settings/SettingsDialog";
 
-export type RailId = "terminal";
+export type RailId = "terminal" | "projects";
 
 interface PluginDef {
   id: RailId;
@@ -25,6 +25,7 @@ interface PluginDef {
 
 const PLUGINS: PluginDef[] = [
   { id: "terminal", label: "Terminal", icon: "terminal" },
+  { id: "projects", label: "Projects", icon: "projects" },
 ];
 
 export function PluginRail() {
@@ -40,6 +41,10 @@ export function PluginRail() {
     if (id === "terminal") {
       toggle();
       return;
+    }
+    if (id === "projects") {
+      // Its own OS window, so it is never "active" in this rail.
+      window.dispatchEvent(new CustomEvent("spark:command", { detail: { id: "project.manage" } }));
     }
   }, [toggle]);
 

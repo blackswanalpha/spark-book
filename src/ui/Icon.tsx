@@ -119,6 +119,10 @@ import {
   VideoCamera,
   Keyboard,
   Info,
+  Folders,
+  GitBranch,
+  CloudArrowDown,
+  AppWindow,
 } from "@phosphor-icons/react";
 import { DartIcon } from "./DartIcon";
 
@@ -233,6 +237,10 @@ const PHOSPHOR_MAP: Record<string, PhosphorComp> = {
   VideoCamera,
   Keyboard,
   Info,
+  Folders,
+  GitBranch,
+  CloudArrowDown,
+  AppWindow,
 };
 
 const CUSTOM_MAP: Record<string, PhosphorComp> = {
@@ -351,6 +359,10 @@ const ALIAS: Record<string, keyof typeof PHOSPHOR_MAP | keyof typeof CUSTOM_MAP>
   home: "House",
   pin: "PushPin",
   unpin: "PushPinSlash",
+  projects: "Folders",
+  "git-branch": "GitBranch",
+  clone: "CloudArrowDown",
+  "app-window": "AppWindow",
 };
 
 export type LegacyIconName = keyof typeof ALIAS;

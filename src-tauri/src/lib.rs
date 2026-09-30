@@ -1,5 +1,6 @@
 mod checkpoint;
 mod project;
+mod project_new;
 mod pty;
 mod pty_sink;
 mod update_env;
@@ -597,6 +598,7 @@ pub fn run() {
         .manage(checkpoint::CheckpointManager::default())
         .manage(pty::PtyManager::default())
         .manage(watch::WatchManager::default())
+        .manage(project_new::CloneManager::default())
         .invoke_handler(tauri::generate_handler![
             read_file,
             read_file_base64,
@@ -637,6 +639,13 @@ pub fn run() {
             pty::pty_search,
             project::list_project_files,
             project::search_project,
+            project_new::project_create,
+            project_new::project_clone,
+            project_new::project_clone_cancel,
+            project_new::project_git_branches,
+            project_new::projects_window_open,
+            project_new::window_labels,
+            project_new::window_focus,
             update_env::update_environment,
             update_env::restart_app,
             watch::watch_path,
@@ -662,6 +671,9 @@ pub fn run() {
                 }
                 if let Some(manager) = handle.try_state::<watch::WatchManager>() {
                     watch::shutdown_window(&manager, label);
+                }
+                if let Some(manager) = handle.try_state::<project_new::CloneManager>() {
+                    project_new::shutdown_window(&manager, label);
                 }
                 if checkpoint::tracks_window(label) {
                     if let Some(manager) = handle.try_state::<checkpoint::CheckpointManager>() {
@@ -691,6 +703,9 @@ pub fn run() {
                     }
                     if let Some(manager) = app.try_state::<watch::WatchManager>() {
                         watch::shutdown_all(&manager);
+                    }
+                    if let Some(manager) = app.try_state::<project_new::CloneManager>() {
+                        project_new::shutdown_all(&manager);
                     }
                 }
                 _ => {}

@@ -197,6 +197,11 @@ pub struct Inner {
     next_label: u64,
     next_order: u64,
     exiting: bool,
+    /// Labels whose windows are gone but whose rows were kept because
+    /// each was the last row standing. The Projects window outlives
+    /// every editor, so a window can open after the "last" one closed;
+    /// the kept row is then a ghost and goes when the new row arrives.
+    closed: HashSet<String>,
     path: Option<PathBuf>,
 }
 
@@ -250,6 +255,7 @@ impl Inner {
             next_label: 1,
             next_order: 1,
             exiting: false,
+            closed: HashSet::new(),
             path: None,
         }
     }
@@ -302,7 +308,13 @@ impl Inner {
         let rev = row.rev;
         match existing {
             Some(i) => self.file.windows[i] = row,
-            None => self.file.windows.push(row),
+            None => {
+                self.file.windows.push(row);
+                if !self.closed.is_empty() {
+                    let closed = std::mem::take(&mut self.closed);
+                    self.file.windows.retain(|w| !closed.contains(&w.label));
+                }
+            }
         }
 
         self.file.windows.sort_by_key(|w| w.order);
@@ -325,7 +337,13 @@ impl Inner {
     /// would mean quitting from a single window always relaunched into
     /// an empty one.
     pub fn forget_window(&mut self, label: &str, now: i64) -> bool {
-        if self.exiting || self.file.windows.len() <= 1 {
+        if self.exiting {
+            return false;
+        }
+        if self.file.windows.len() <= 1 {
+            if self.file.windows.iter().any(|w| w.label == label) {
+                self.closed.insert(label.to_string());
+            }
             return false;
         }
         let before = self.file.windows.len();
@@ -880,6 +898,21 @@ mod tests {
         let disk = inner.to_disk();
         assert_eq!(disk.windows.len(), 1);
         assert_eq!(disk.windows[0].label, "editor-2");
+    }
+
+    #[test]
+    fn a_window_opened_after_the_last_one_closed_replaces_its_row() {
+        let mut inner = Inner::open(None, T);
+        inner.save_window(win("main", "/a", 1), T);
+        // Closed while the Projects window keeps the app running.
+        assert!(!inner.forget_window("main", T));
+        assert_eq!(inner.to_disk().windows.len(), 1, "still the session if the app quits now");
+
+        let label = inner.allocate_label();
+        inner.save_window(win(&label, "/b", 0), T);
+        let disk = inner.to_disk();
+        assert_eq!(disk.windows.len(), 1, "the closed window's row is gone");
+        assert_eq!(disk.windows[0].label, label);
     }
 
     #[test]

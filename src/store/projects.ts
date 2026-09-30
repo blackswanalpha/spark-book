@@ -503,6 +503,58 @@ export async function hydrateProjects(): Promise<void> {
   useProjects.setState({ hydrated: true });
 }
 
+/**
+ * The cache as last persisted by any window, read fresh from both
+ * copies, newest row winning. For the Projects window, which lists
+ * projects without owning a workspace and so never loads this store
+ * for itself. Both are needed: localStorage is only written on a
+ * change, so a window that just hydrated from projects.json has left
+ * it empty.
+ */
+export async function readPersistedProjects(): Promise<Project[]> {
+  const byId = new Map<string, Project>();
+  for (const p of readLocal().projects) byId.set(p.id, p);
+  const store = getStore();
+  if (store) {
+    try {
+      const v = await store.get<ProjectsCache>(STORE_KEY);
+      if (v != null) {
+        for (const p of coerce(v).projects) {
+          const l = byId.get(p.id);
+          if (!l || p.lastOpened >= l.lastOpened) byId.set(p.id, p);
+        }
+      }
+    } catch {
+      /* unreadable store — the localStorage copy still counts */
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Drop one project from the persisted copies without touching this
+ * window's in-memory store (whose activeId and snapshots would clobber
+ * the editor windows' own). Editor windows drop it from memory when the
+ * Projects window broadcasts the removal.
+ */
+export async function forgetPersistedProject(id: string): Promise<void> {
+  const local = readLocal();
+  if (local.projects.some((p) => p.id === id)) {
+    writeLocal({ ...local, projects: local.projects.filter((p) => p.id !== id), activeId: local.activeId === id ? null : local.activeId });
+  }
+  const store = getStore();
+  if (!store) return;
+  try {
+    const raw = await store.get<ProjectsCache>(STORE_KEY);
+    if (raw == null) return;
+    const c = coerce(raw);
+    if (!c.projects.some((p) => p.id === id)) return;
+    await store.set(STORE_KEY, { ...c, projects: c.projects.filter((p) => p.id !== id), activeId: c.activeId === id ? null : c.activeId });
+  } catch {
+    /* the checkpoint row is already gone; this copy only feeds a merge */
+  }
+}
+
 /** Non-React reader, mirroring getSettings(). */
 export const getProjects = (): ProjectsCache => {
   const s = useProjects.getState();

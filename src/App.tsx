@@ -72,6 +72,8 @@ import SaveAsModal from "@shell/SaveAsModal";
 import UnsavedChangesModal, { type UnsavedChoice } from "@shell/UnsavedChangesModal";
 import ProjectSwitcher from "@shell/ProjectSwitcher";
 import ProjectPicker from "@shell/project/ProjectPicker";
+import { isProjectsWindow } from "@shell/projects/windowBridge";
+import { listenForProjectsWindow } from "@shell/projects/receiver";
 import "./App.css";
 
 /** Tab icon per document mode. */
@@ -594,6 +596,10 @@ function Shell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The Projects window asks this window to open a project, and tells
+  // every window about renames, pins and removals made over there.
+  useEffect(() => listenForProjectsWindow(), []);
+
   // Close the active project: keep its snapshot, drop it from the front.
   useEffect(() => {
     const onCloseProject = () => {
@@ -934,6 +940,18 @@ function isMac() {
   return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 }
 
+const ProjectsWindow = lazy(() => import("@shell/projects/ProjectsWindow"));
+
+/** The Projects window: its own tree, sharing only theme, settings and toasts. */
+function ProjectsStandalone() {
+  useEffect(() => hydrateSettings(), []);
+  return (
+    <Suspense fallback={<div style={{ height: "100vh", background: "var(--surface-1)" }} />}>
+      <ProjectsWindow />
+    </Suspense>
+  );
+}
+
 function isTerminalWindow(): boolean {
   try {
     return new URLSearchParams(window.location.search).has("terminal");
@@ -1011,6 +1029,15 @@ function TerminalStandalone() {
 }
 
 export default function App() {
+  if (isProjectsWindow()) {
+    return (
+      <ThemeProvider>
+        <ToastProvider>
+          <ProjectsStandalone />
+        </ToastProvider>
+      </ThemeProvider>
+    );
+  }
   if (isTerminalWindow()) {
     return (
       <ThemeProvider>
