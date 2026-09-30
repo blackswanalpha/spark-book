@@ -21,7 +21,7 @@ vi.mock("@bridge/commands", () => ({
   copyPath: vi.fn(async () => undefined),
 }));
 
-import { useDocs, basename, isBinaryMode, isStreamMode } from "./documents";
+import { useDocs, basename, isBinaryMode, isStreamMode, switchableModes } from "./documents";
 import { writeFile, writeFileBase64, saveFileDialog, recentsAdd, copyPath } from "@bridge/commands";
 
 const mockedWriteFile = vi.mocked(writeFile);
@@ -315,6 +315,21 @@ describe("binary documents", () => {
     const id = useDocs.getState().open({ name: "a.md", mode: "markdown", raw: "# hi" });
     useDocs.getState().setMode(id, "pdf");
     expect(useDocs.getState().docs[id].mode).toBe("markdown");
+  });
+
+  it("keeps a PDF out of the image surfaces, though both are binary", () => {
+    const id = useDocs.getState().open({ name: "a.pdf", mode: "pdf", raw: "JVBE", binary: true });
+    useDocs.getState().setMode(id, "image");
+    useDocs.getState().setMode(id, "imageedit");
+    expect(useDocs.getState().docs[id].mode).toBe("pdf");
+  });
+
+  it("lists the surfaces each kind of document can switch to", () => {
+    expect(switchableModes({ mode: "markdown", binary: false })).toEqual(["markdown", "rich", "code", "html", "svg"]);
+    expect(switchableModes({ mode: "image", binary: true })).toEqual(["image", "imageedit"]);
+    expect(switchableModes({ mode: "pdf", binary: true })).toEqual(["pdf"]);
+    expect(switchableModes({ mode: "video", binary: true })).toEqual(["video"]);
+    expect(switchableModes({ mode: "animation", binary: false })).toEqual(["animation", "code"]);
   });
 });
 

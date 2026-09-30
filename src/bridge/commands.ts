@@ -107,6 +107,39 @@ export const watchPath = (path: string) => call<WatchId>("watch_path", { path })
  */
 export const unwatchPath = (id: WatchId) => call<void>("unwatch_path", { id });
 
+/* ---------- Project-wide ---------- */
+
+export interface ProjectFileList {
+  /** Paths relative to the root, `/`-separated. */
+  files: string[];
+  /** The walk hit a bound (count or time) and the list is partial. */
+  truncated: boolean;
+}
+
+export interface SearchHit {
+  /** Absolute path. */
+  path: string;
+  /** 1-based. */
+  line: number;
+  col: number;
+  /** The matching line, trimmed and length-capped. */
+  text: string;
+}
+
+export interface ProjectSearchResult {
+  hits: SearchHit[];
+  filesSearched: number;
+  truncated: boolean;
+}
+
+/** Every file under `root`, skipping VCS, dependency and build folders. */
+export const listProjectFiles = (root: string, limit?: number) =>
+  call<ProjectFileList>("list_project_files", { root, limit });
+
+/** Lines under `root` containing `query` literally. */
+export const searchProject = (root: string, query: string, caseSensitive = false, limit?: number) =>
+  call<ProjectSearchResult>("search_project", { root, query, caseSensitive, limit });
+
 /* ---------- Path helpers ---------- */
 /**
  * Split an absolute path into ordered segments. Empty / "/" yield an empty array.
@@ -479,6 +512,25 @@ const MEMORY_DIRS: Set<string> = new Set<string>([
   "/demo",
 ]);
 
+/** Mirrors SKIP_DIRS in src-tauri/src/project.rs. */
+const MOCK_SKIP = new Set([
+  "node_modules", "target", "dist", "build", "__pycache__", "venv",
+]);
+
+function mockPrefix(root: string): string {
+  return root.endsWith("/") ? root : `${root}/`;
+}
+
+/** Mock files under `root`, as absolute paths, walk rules applied. */
+function mockProjectFiles(root: string): string[] {
+  const prefix = mockPrefix(root);
+  return [...MEMORY_FS.keys(), ...MEMORY_BIN.keys()].filter((p) => {
+    if (!p.startsWith(prefix)) return false;
+    const dirs = p.slice(prefix.length).split("/").slice(0, -1);
+    return !dirs.some((d) => d.startsWith(".") || MOCK_SKIP.has(d));
+  });
+}
+
 function mock<T>(cmd: string, args?: any): T {
   switch (cmd) {
     case "read_file": {
@@ -628,6 +680,25 @@ function mock<T>(cmd: string, args?: any): T {
     case "reveal_in_folder":
     case "open_with_os":
       return undefined as unknown as T;
+    case "list_project_files": {
+      const files = mockProjectFiles(args.root).map((p) => p.slice(mockPrefix(args.root).length));
+      return { files: files.sort(), truncated: false } as unknown as T;
+    }
+    case "search_project": {
+      const needle: string = args.caseSensitive ? args.query : String(args.query).toLowerCase();
+      const hits: SearchHit[] = [];
+      if (needle) {
+        for (const path of mockProjectFiles(args.root).sort()) {
+          const text = MEMORY_FS.get(path);
+          if (text === undefined) continue;
+          text.split("\n").forEach((line, i) => {
+            const col = (args.caseSensitive ? line : line.toLowerCase()).indexOf(needle);
+            if (col >= 0) hits.push({ path, line: i + 1, col: col + 1, text: line.trim() });
+          });
+        }
+      }
+      return { hits, filesSearched: MEMORY_FS.size, truncated: false } as unknown as T;
+    }
     case "recents_get":
       return [
         "/welcome.md", "/notes.md", "/hello.ts", "/README.md",
@@ -799,8 +870,9 @@ export function mediaMime(path: string): string {
  *  - .svg  → "svg"
  *  - .html / .htm → "html" (webview preview)
  *  - .md / .markdown → "markdown"
- *  - .json → "rich"
- *  - everything else → "code"
+ *  - everything else, .json included → "code". JSON used to open in
+ *    "rich", which cannot show it and wrote HTML over it on the first
+ *    keystroke.
  */
 export function pickMode(path: string): ModeName {
   const lower = path.toLowerCase();
@@ -813,7 +885,6 @@ export function pickMode(path: string): ModeName {
   if (lower.endsWith(".svg")) return "svg";
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
-  if (lower.endsWith(".json")) return "rich";
   return "code";
 }
 

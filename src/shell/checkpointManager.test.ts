@@ -221,6 +221,17 @@ describe("bootCheckpoint", () => {
     expect(s.projects.map((p) => p.id).sort()).toEqual(["/a", "/b"]);
     expect(s.activeId).toBe("/a");
   });
+
+  it("keeps the local copy of a project when it is newer than the checkpoint's", () => {
+    const row = (lastOpened: number, name: string) => ({
+      id: "/a", rootPath: "/a", name, lastOpened, workspace: EMPTY_WORKSPACE,
+    });
+    useProjects.setState({ projects: [row(200, "local")] });
+    seedProjects([row(100, "stale")], "/a");
+    expect(useProjects.getState().projects[0].name).toBe("local");
+    seedProjects([row(300, "fresh")], "/a");
+    expect(useProjects.getState().projects[0].name).toBe("fresh");
+  });
 });
 
 /* ---------- A full launch cycle ---------- */

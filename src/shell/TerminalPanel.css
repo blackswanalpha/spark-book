@@ -224,6 +224,20 @@
   min-width: 0;
 }
 
+.term__tabRename {
+  width: 110px;
+  min-width: 0;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+  user-select: text;
+}
+
 .term__tabIcon--root { color: var(--danger); }
 
 /* The close control holds its space at all times: revealing it on hover
@@ -287,6 +301,7 @@
 }
 /* [hidden] loses to display:flex on its own, and a still-flexing hidden
    tab would halve the visible one's height. */
+.term[hidden],
 .term__holder[hidden],
 .term-standalone__body[hidden] { display: none; }
 

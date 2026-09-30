@@ -16,6 +16,7 @@
    ============================================================ */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  appShortcut,
   clipboardIntent,
   ctrlVBytes,
   decodeClipboard,
@@ -103,8 +104,12 @@ interface Props {
   focusOnShow?: boolean;
   onStatus?: (s: TerminalStatus) => void;
   onTitle?: (title: string | null) => void;
+  /** The shell's working directory, reported as it changes. */
+  onCwd?: (cwd: string) => void;
   /** The program rang the bell or sent a notification. */
   onBell?: () => void;
+  /** Typed into the shell once it is running — a task's command line. */
+  initialInput?: string;
 }
 
 /* Sessions being handed to another window. A view unmounting normally
@@ -125,7 +130,9 @@ export function TerminalView({
   focusOnShow = true,
   onStatus,
   onTitle,
+  onCwd,
   onBell,
+  initialInput,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
@@ -176,11 +183,17 @@ export function TerminalView({
      ref keeps the session effect from tearing down the shell. */
   const onStatusRef = useRef(onStatus);
   const onTitleRef = useRef(onTitle);
+  const onCwdRef = useRef(onCwd);
   const onBellRef = useRef(onBell);
   const focusOnShowRef = useRef(focusOnShow);
+  /* Read once per mount. A restart remounts the view, so a task's tab
+     runs its command again; the session drops the command when the
+     privilege flips, so a task is never re-run as root. */
+  const initialInputRef = useRef(initialInput);
   useEffect(() => {
     onStatusRef.current = onStatus;
     onTitleRef.current = onTitle;
+    onCwdRef.current = onCwd;
     onBellRef.current = onBell;
     focusOnShowRef.current = focusOnShow;
   });
@@ -253,6 +266,7 @@ export function TerminalView({
     // would otherwise poison the scrollbar geometry with NaN.
     setScrollMax(Number.isFinite(frame.scrollbackMax) ? frame.scrollbackMax : 0);
     onTitleRef.current?.(frame.title ?? null);
+    if (frame.cwd) onCwdRef.current?.(frame.cwd);
     setGrid((prev) => reduceFrame(prev, frame));
   }, []);
 
@@ -343,6 +357,14 @@ export function TerminalView({
           privilege: session.privilege,
         });
         void ptyRefresh(session.id).catch(() => {});
+
+        /* The tty buffers input until the shell reads it, so the command
+           can go now rather than waiting for a prompt to appear. */
+        const pending = initialInputRef.current;
+        if (pending && !adopting) {
+          initialInputRef.current = undefined;
+          void ptyWrite(session.id, pending).catch(() => {});
+        }
 
         /* A shell that died before the listener attached — a bad login
            shell, a pkexec the user cancelled — would otherwise sit on
@@ -881,6 +903,18 @@ export function TerminalView({
         e.preventDefault();
         e.stopPropagation();
         openFind();
+        return;
+      }
+
+      // Panel toggles, the palette and tab switching belong to the app.
+      const app = appShortcut(e.nativeEvent);
+      if (app === "app") return;
+      if (app) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent("spark:terminal:cycle", { detail: { step: app === "next-tab" ? 1 : -1 } }),
+        );
         return;
       }
 

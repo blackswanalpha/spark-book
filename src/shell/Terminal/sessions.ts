@@ -27,6 +27,14 @@ export interface TerminalSession {
   restartKey: number;
   /** Title reported by the shell, when it sets one. */
   title: string | null;
+  /** Where the shell is now, as the host last reported it. `cwd` stays
+      the directory it was spawned in, because it keys the view: changing
+      it would respawn the shell. */
+  liveCwd?: string;
+  /** A name the user gave the tab. Wins over everything else. */
+  name?: string | null;
+  /** Typed into the shell once it starts — a task's command line. */
+  initialInput?: string;
   /** A live host session to attach to instead of spawning — set on a tab
       that was moved from another window. Only the first mount uses it; a
       restart spawns fresh. */
@@ -66,14 +74,22 @@ export function createSession(
  * The full title and path stay in the tooltip.
  */
 export function displayName(s: TerminalSession): string {
-  const base = s.cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  const named = s.name?.trim();
+  if (named) return named;
+  const base = currentCwd(s).replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   return base || s.label;
+}
+
+/** Where the shell is now: the reported directory, else where it started. */
+export function currentCwd(s: TerminalSession): string {
+  return s.liveCwd || s.cwd;
 }
 
 /** Tooltip: where the shell is, plus whatever title it reports. */
 export function sessionTooltip(s: TerminalSession): string {
   const title = s.title?.trim();
-  return title ? `${s.cwd}\n${title}` : s.cwd;
+  const where = currentCwd(s);
+  return title ? `${where}\n${title}` : where;
 }
 
 export function patchSession(
@@ -121,7 +137,26 @@ export function nextActiveAfterClose(
   return remaining[Math.min(idx, remaining.length - 1)].id;
 }
 
-/** The session already sitting at `cwd`, if there is one. */
+/** The session already sitting at `cwd`, if there is one. A shell that
+    has since `cd`-ed elsewhere is not sitting there any more. */
 export function findByCwd(list: TerminalSession[], cwd: string): TerminalSession | undefined {
-  return list.find((s) => s.cwd === cwd);
+  return list.find((s) => currentCwd(s) === cwd);
+}
+
+/** The session `step` places from `activeId`, wrapping at either end. */
+export function cycleFrom(
+  list: TerminalSession[],
+  activeId: string | null,
+  step: 1 | -1,
+): string | null {
+  if (list.length === 0) return null;
+  const idx = list.findIndex((s) => s.id === activeId);
+  if (idx < 0) return list[0].id;
+  return list[(idx + step + list.length) % list.length].id;
+}
+
+/** A user-given tab name: trimmed, capped, and null when blank. */
+export function cleanName(name: string | null | undefined): string | null {
+  const t = (name ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+  return t || null;
 }

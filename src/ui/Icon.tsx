@@ -105,6 +105,8 @@ import {
   ArrowsInLineVertical,
   ClipboardText,
   House,
+  PushPin,
+  PushPinSlash,
   SpeakerHigh,
   SpeakerLow,
   SpeakerX,
@@ -217,6 +219,8 @@ const PHOSPHOR_MAP: Record<string, PhosphorComp> = {
   ArrowsInLineVertical,
   ClipboardText,
   House,
+  PushPin,
+  PushPinSlash,
   SpeakerHigh,
   SpeakerLow,
   SpeakerX,
@@ -345,6 +349,8 @@ const ALIAS: Record<string, keyof typeof PHOSPHOR_MAP | keyof typeof CUSTOM_MAP>
   "collapse-all": "ArrowsInLineVertical",
   "copy-path": "ClipboardText",
   home: "House",
+  pin: "PushPin",
+  unpin: "PushPinSlash",
 };
 
 export type LegacyIconName = keyof typeof ALIAS;

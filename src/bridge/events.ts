@@ -21,8 +21,11 @@ export async function on<T>(event: string, handler: (payload: T) => void): Promi
  * A filesystem change notification. The host emits `file:changed` whenever
  * a watched path (or anything underneath it) changes on disk.
  *
- *  - `path` : the affected absolute path
- *  - `kind` : the kind of change that occurred
+ *  - `path` : the affected absolute path; empty for "bulk"
+ *  - `kind` : the kind of change that occurred. "bulk" means the host
+ *             coalesced more changes than it sends one by one (see
+ *             MAX_CHANGES_PER_FLUSH in watch.rs), so every cached
+ *             listing under the watched root is suspect.
  *  - `from` : the previous path when `kind === "renamed"`, otherwise
  *             omitted
  *
@@ -31,7 +34,7 @@ export async function on<T>(event: string, handler: (payload: T) => void): Promi
  */
 export interface FileChangeEvent {
   path: string;
-  kind: "modified" | "created" | "removed" | "renamed";
+  kind: "modified" | "created" | "removed" | "renamed" | "bulk";
   from?: string;
 }
 

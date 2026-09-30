@@ -1,4 +1,5 @@
 mod checkpoint;
+mod project;
 mod pty;
 mod pty_sink;
 mod update_env;
@@ -634,6 +635,8 @@ pub fn run() {
             pty::pty_default_shell,
             pty::pty_set_palette,
             pty::pty_search,
+            project::list_project_files,
+            project::search_project,
             update_env::update_environment,
             update_env::restart_app,
             watch::watch_path,
