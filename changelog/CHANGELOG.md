@@ -19,6 +19,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 
 ---
 
+## [0.11.1] — 2026-09-30
+
+Browsing outside the project no longer freezes or crashes a window.
+
+### Fixed
+
+- **A window stays usable when the explorer is rooted at `~` or `/`.** A busy folder such as a home directory changes several times a second, and each change re-rendered the whole tree up to three times. A large listing could not keep up, so the window's CPU and memory climbed until it crashed. Changes are now gathered per folder and re-read in one pass, and a folder whose listing did not change is not redrawn.
+- **Folder reads that answer out of order no longer show an older listing** or clear the spinner of a read still in progress.
+- **Clicking Up several times starts one folder watch, not one per click.** Each watch walks up to 4,096 folders.
+- **Opening a device, FIFO or socket shows an error.** `/dev/zero` read until memory ran out, and a FIFO hung the app. Files over 64 MiB (text) or 256 MiB (images, PDFs) are refused, measured by bytes read, because `/proc` reports every file as empty.
+- **A stalled network or FUSE mount no longer freezes every window.** Listing, stat, read, create, rename, delete, copy and watch now run off the main thread.
+- **The watcher and Find in Files stay on the root folder's disk**, so a root of `/` no longer walks `/proc` or `/sys`.
+
+---
+
 ## [0.11.0] — 2026-09-30
 
 A Projects window for opening, creating and cloning projects, one window per project. Switching or closing a project no longer throws away unsaved changes.
@@ -411,7 +426,8 @@ Initial public scaffolding. Usable in Vite (browser mock FS) and via Tauri when 
 - Session restore (`app_data_dir/recents.json`, window geometry) — host commands exist, renderer boot wiring is best-effort.
 - Single window, single user, local files only — no sync, no LSP/DAP, no collaboration (by design — see `explanation.md:7`).
 
-[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.11.1
 [0.11.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.11.0
 [0.10.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.10.0
 [0.9.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.9.0
