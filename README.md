@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/blackswanalpha/spark-book/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.10.0-5b8def"></a>
+  <a href="https://github.com/blackswanalpha/spark-book/releases"><img alt="Release" src="https://img.shields.io/badge/release-v0.11.0-5b8def"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-ready-1f2937">
   <img alt="Offline" src="https://img.shields.io/badge/works%20offline-always-2ea043">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-f2a33c">

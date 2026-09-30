@@ -19,6 +19,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 
 ---
 
+## [0.11.0] — 2026-09-30
+
+A Projects window for opening, creating and cloning projects, one window per project. Switching or closing a project no longer throws away unsaved changes.
+
+### Added
+
+- **Projects window.** The Projects button under Terminal on the rail (also File → Manage Projects…) opens a window listing every project with its Git branch, path and tab count, and whether it is open or its folder has gone. Search matches name, path or branch.
+- **One window per project.** Opening a project that is already open brings its window forward. Otherwise it opens in a new window, or in the window you came from when that window has no folder. Shift+Enter always opens a new window. Ctrl+Enter opens it in the window you came from. A footer switch makes that the default.
+- **New Project.** A name, a location and an optional Git repository. The new folder opens as a project.
+- **Clone Repository.** Clones with the Git on this machine, shows progress and reports Git's own error. Cancel stops Git and its helper processes and removes the partial folder. A repository that asks for a password fails with a message instead of waiting on a prompt nobody can see.
+- **Project actions.** Pin, rename (F2), copy path, reveal in the file manager, and remove from the list. A missing folder is greyed out with a Remove button. An open project cannot be removed until its window is closed. Renames, pins and removals reach every open window.
+- Host commands `project_create`, `project_clone`, `project_clone_cancel`, `project_git_branches`, `projects_window_open`, `window_labels` and `window_focus`.
+
+### Fixed
+
+- **Switching or closing a project no longer discards unsaved changes.** Open Folder, Switch Project, Close Project and the Projects window now ask first: Save (Save All for several files), Don't Save, or Cancel. Cancel keeps the project and the edits.
+- **Dialogs are centred.** Their opening animation replaced the transform that centred them, so every dialog sat offset right and down, and was cut off in small windows.
+- **A window that cannot open says so.** Opening a window past the eight-window limit reported success and did nothing.
+- **A closed window no longer comes back.** Closing the last editor window while the Projects window stayed open left its record behind, and the next launch reopened it.
+
+---
+
 ## [0.10.0] — 2026-09-30
 
 Terminals keep running when hidden and reopen where you left them; projects gain search, tasks and pinning; and rich text stops overwriting Markdown and JSON with HTML.
@@ -389,7 +411,8 @@ Initial public scaffolding. Usable in Vite (browser mock FS) and via Tauri when 
 - Session restore (`app_data_dir/recents.json`, window geometry) — host commands exist, renderer boot wiring is best-effort.
 - Single window, single user, local files only — no sync, no LSP/DAP, no collaboration (by design — see `explanation.md:7`).
 
-[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.11.0
 [0.10.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.10.0
 [0.9.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.9.0
 [0.8.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.8.0
