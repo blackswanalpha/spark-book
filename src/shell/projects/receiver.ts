@@ -5,10 +5,11 @@
    project here", and keep this window's project cache in step with
    renames, pins and removals made over there.
 
-   Switching a window's project closes its tabs, so a window with
-   unsaved files never switches. An `auto` request (the Projects
-   window thought this window was free) goes to a new window instead;
-   an explicit one is refused with a toast that says why.
+   Switching a window's project closes its tabs. An `auto` request
+   (the Projects window thought this window was free) never does that
+   to a window with a project or unsaved files: it opens a new window
+   instead. An explicit one goes through the switch, which asks to
+   save, drop or keep unsaved changes before closing anything.
    ============================================================ */
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -49,13 +50,6 @@ export async function openHere(p: OpenHerePayload): Promise<void> {
   }
 
   await focusSelf();
-  if (dirty) {
-    toastError(
-      `${p.project.name} was not opened`,
-      "This window has unsaved changes. Save or close them first, or open the project in a new window.",
-    );
-    return;
-  }
   if (p.project.id === activeId) return;
 
   // The row may be newer than this window's cache, or missing from it

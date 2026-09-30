@@ -133,6 +133,34 @@ function Shell() {
 
   const pendingCloseRef = useRef<(() => void) | null>(null);
 
+  /* Leaving a project closes every tab in the window. With unsaved
+     changes, ask first: save them all, drop them, or stay. Switching
+     used to close them without a word. */
+  const [leave, setLeave] = useState<{ names: string[]; context: string } | null>(null);
+  const [leaveBusy, setLeaveBusy] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const leaveResolveRef = useRef<((go: boolean) => void) | null>(null);
+
+  /** Resolves true when the window's tabs may be closed. */
+  const confirmLeave = useCallback((context: string): Promise<boolean> => {
+    const dirty = Object.values(useDocs.getState().docs).filter((d) => d.dirty);
+    if (dirty.length === 0) return Promise.resolve(true);
+    // A second request while one is waiting answers the first "stay".
+    leaveResolveRef.current?.(false);
+    return new Promise<boolean>((resolve) => {
+      leaveResolveRef.current = resolve;
+      setLeaveError(null);
+      setLeave({ names: dirty.map((d) => d.name), context });
+    });
+  }, []);
+
+  const settleLeave = useCallback((go: boolean) => {
+    const resolve = leaveResolveRef.current;
+    leaveResolveRef.current = null;
+    setLeave(null);
+    resolve?.(go);
+  }, []);
+
   /* The command table closes over store getters, not over React state, so
      it only needs rebuilding when the set of commands could change. Holding
      it in state (rather than assigning a ref during render) keeps the menu
@@ -554,6 +582,8 @@ function Shell() {
             return;
           }
         }
+        const target = useProjects.getState().get(targetId)?.name ?? (path ? path.split("/").filter(Boolean).pop() : null) ?? "the project";
+        if (!(await confirmLeave(`Opening ${target} closes this window's tabs.`))) return;
         flushWorkspace();
         await flushCheckpoint();
         teardownAutosave?.();
@@ -594,7 +624,7 @@ function Shell() {
     window.addEventListener("spark:folder:open", onFolderOpen);
     return () => window.removeEventListener("spark:folder:open", onFolderOpen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [confirmLeave]);
 
   // The Projects window asks this window to open a project, and tells
   // every window about renames, pins and removals made over there.
@@ -602,7 +632,8 @@ function Shell() {
 
   // Close the active project: keep its snapshot, drop it from the front.
   useEffect(() => {
-    const onCloseProject = () => {
+    const onCloseProject = async () => {
+      if (!(await confirmLeave("Closing the project closes its tabs."))) return;
       flushWorkspace();
       void flushCheckpoint();
       teardownAutosave?.();
@@ -618,7 +649,7 @@ function Shell() {
     };
     window.addEventListener("spark:project:close", onCloseProject);
     return () => window.removeEventListener("spark:project:close", onCloseProject);
-  }, []);
+  }, [confirmLeave]);
 
   const activeDoc = active ? docs[active] : null;
 
@@ -877,6 +908,37 @@ function Shell() {
           } else {
             setSaveAsError(result.error instanceof Error ? result.error.message : String(result.error ?? "Unknown error"));
           }
+        }}
+      />
+      <UnsavedChangesModal
+        open={leave !== null}
+        onOpenChange={() => { /* closing is a choice; onChoose settles it */ }}
+        documentName={leave?.names[0] ?? ""}
+        description={leave && leave.names.length > 1
+          ? `You have unsaved changes in ${leave.names.length} files: ${leave.names.slice(0, 3).join(", ")}${leave.names.length > 3 ? ", …" : ""}.`
+          : undefined}
+        saveLabel={leave && leave.names.length > 1 ? "Save All" : "Save"}
+        context={leave?.context}
+        busy={leaveBusy}
+        errorMessage={leaveError}
+        onChoose={async (choice: UnsavedChoice) => {
+          if (choice === "cancel") return settleLeave(false);
+          if (choice === "discard") return settleLeave(true);
+          setLeaveBusy(true);
+          setLeaveError(null);
+          const res = await useDocs.getState().saveAllDirty();
+          setLeaveBusy(false);
+          if (res.errors.length > 0) {
+            const first = res.errors[0].error;
+            setLeaveError(`Could not save ${res.errors.length === 1 ? "a file" : `${res.errors.length} files`}: ${first instanceof Error ? first.message : String((first as { kind?: string })?.kind ?? first)}`);
+            return;
+          }
+          if (res.cancelled) {
+            setLeaveError("Saving was cancelled, so nothing was closed.");
+            return;
+          }
+          toast.success(res.saved.length === 1 ? "File saved" : `${res.saved.length} files saved`);
+          settleLeave(true);
         }}
       />
       <UnsavedChangesModal
