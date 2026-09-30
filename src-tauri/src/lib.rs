@@ -319,16 +319,49 @@ fn copy_blocking(from: String, to: String) -> Result<(), HostError> {
     if std::fs::metadata(&to).is_ok() {
         return Err(HostError::AlreadyExists { path: to });
     }
+    let meta = std::fs::metadata(&from)?;
+    // The copy is created before the source is listed, so a copy inside
+    // the source finds itself and recurses until the path is too long.
+    if meta.is_dir() && lands_inside(std::path::Path::new(&from), std::path::Path::new(&to)) {
+        return Err(HostError::InvalidPath {
+            path: to,
+            reason: "a folder cannot be copied into itself".into(),
+        });
+    }
     if let Some(parent) = std::path::Path::new(&to).parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let meta = std::fs::metadata(&from)?;
     if meta.is_dir() {
         copy_dir_recursive(std::path::Path::new(&from), std::path::Path::new(&to))?;
     } else {
         std::fs::copy(&from, &to)?;
     }
     Ok(())
+}
+
+/// Whether `to` would sit inside the directory `from`. Both sides are
+/// resolved, so a destination reached through a symlink into the source
+/// is caught too. `to` does not exist yet: its nearest existing ancestor
+/// is resolved and the rest appended.
+fn lands_inside(from: &std::path::Path, to: &std::path::Path) -> bool {
+    let Ok(from) = std::fs::canonicalize(from) else {
+        return false;
+    };
+    let mut existing = to;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(resolved) = std::fs::canonicalize(existing) {
+            let full = rest.iter().rev().fold(resolved, |acc, part| acc.join(part));
+            return full.starts_with(&from);
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                existing = parent;
+            }
+            _ => return false,
+        }
+    }
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -843,5 +876,51 @@ mod read_tests {
             read_bounded("/proc/self/maps", 16),
             Err(HostError::InvalidPath { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::HostError;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("spark-copy-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("box/inner")).unwrap();
+        std::fs::write(dir.join("box/a.txt"), "a").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_folder_is_not_copied_into_itself() {
+        let dir = scratch("self");
+        let from = dir.join("box").to_string_lossy().into_owned();
+        for to in ["box/box copy", "box/inner/box", "box/new/deeper/box"] {
+            let to = dir.join(to).to_string_lossy().into_owned();
+            assert!(matches!(
+                super::copy_blocking(from.clone(), to.clone()),
+                Err(HostError::InvalidPath { .. })
+            ));
+            assert!(!std::path::Path::new(&to).exists(), "nothing is created for {to}");
+        }
+        // Beside the original is fine.
+        let beside = dir.join("box copy");
+        super::copy_blocking(from, beside.to_string_lossy().into_owned()).unwrap();
+        assert!(beside.join("a.txt").is_file() && beside.join("inner").is_dir());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A link into the source hides the loop from a plain path check.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_into_the_source_is_caught() {
+        let dir = scratch("link");
+        std::os::unix::fs::symlink(dir.join("box/inner"), dir.join("shortcut")).unwrap();
+        let res = super::copy_blocking(
+            dir.join("box").to_string_lossy().into_owned(),
+            dir.join("shortcut/box").to_string_lossy().into_owned(),
+        );
+        assert!(matches!(res, Err(HostError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -274,6 +274,15 @@ describe("explorer store — inline editing, reveal and transfer", () => {
     expect(res.ok).toBe(false);
   });
 
+  it("transfer refuses to paste a copied folder into itself", async () => {
+    await useExplorer.getState().createFolder("/docs/audits", "crate");
+    await useExplorer.getState().createFolder("/docs/audits/crate", "inner");
+    const into = await useExplorer.getState().transfer("copy", "/docs/audits/crate", "/docs/audits/crate");
+    const below = await useExplorer.getState().transfer("copy", "/docs/audits/crate", "/docs/audits/crate/inner");
+    expect(into).toEqual({ ok: false, error: "Cannot copy “crate” into itself." });
+    expect(below.ok).toBe(false);
+  });
+
   it("duplicate places a copy beside the original", async () => {
     await useExplorer.getState().createFile("/docs/audits", "twin.md");
     const res = await useExplorer.getState().duplicate("/docs/audits/twin.md");

@@ -943,8 +943,10 @@ export const useExplorer = create<State & Actions>((set, get) => ({
 
   transfer: async (op, path, targetDir) => {
     const name = baseName(path);
-    if (op === "cut" && isUnder(targetDir, path)) {
-      return { ok: false, error: `Cannot move “${name}” into itself.` };
+    // Copying is refused too: the copy lands inside the folder being
+    // read and the host would copy it again, level after level.
+    if (isUnder(targetDir, path)) {
+      return { ok: false, error: `Cannot ${op === "cut" ? "move" : "copy"} “${name}” into itself.` };
     }
     // No-op cut into the same directory.
     if (op === "cut" && dirName(path) === targetDir) return { ok: true, path };
