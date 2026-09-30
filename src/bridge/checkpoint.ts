@@ -200,15 +200,37 @@ export function checkpointOpenWindow(
   projectId: string | null,
   geometry: Geometry | null = null,
 ): Promise<string> {
-  return queue(async () =>
-    host<string>("checkpoint_open_window", { projectId, geometry }, () => {
-      // No second OS window outside Tauri; still allocate the label and
-      // record the row so the fallback models the same table.
-      const { session: allocated, label } = allocateLabel(getSession());
-      // rev 0, so the window's own first registration is a newer write.
-      const res = saveWindowOf(allocated, { label, projectId, geometry, rev: 0 });
-      commit(res.session);
-      return label;
-    }),
-  );
+  return queue(async () => {
+    // Not through `host`: a window the host refused (the window cap, a
+    // webview that would not build) must reach the caller. The fallback
+    // would hand back a label for a window that does not exist.
+    if (isTauriHost) return tInvoke<string>("checkpoint_open_window", { projectId, geometry });
+    // No second OS window outside Tauri; still allocate the label and
+    // record the row so the fallback models the same table.
+    const { session: allocated, label } = allocateLabel(getSession());
+    // rev 0, so the window's own first registration is a newer write.
+    const res = saveWindowOf(allocated, { label, projectId, geometry, rev: 0 });
+    commit(res.session);
+    return label;
+  });
+}
+
+/** Readable text for a rejected host call: `{ kind, data: { message | path } }`. */
+export function hostErrorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  const err = e as { kind?: string; data?: { message?: string; path?: string; reason?: string } } | null;
+  const d = err?.data;
+  if (d?.message) return d.message;
+  if (d?.path && d.reason) return `${d.path}: ${d.reason}`;
+  if (err?.kind && d?.path) {
+    const what: Record<string, string> = {
+      NotFound: "not found",
+      PermissionDenied: "permission denied",
+      AlreadyExists: "already exists",
+      IsADirectory: "is a directory",
+    };
+    return `${d.path} ${what[err.kind] ?? err.kind}`;
+  }
+  return String(err?.kind ?? e);
 }

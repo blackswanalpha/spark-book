@@ -103,6 +103,9 @@ export interface Session {
   nextOrder: number;
   /** True once the app is quitting: closing windows stop forgetting themselves. */
   exiting: boolean;
+  /** Windows gone but kept as the last row standing; dropped once a new
+      window registers (the Projects window can outlive every editor). */
+  closed?: string[];
 }
 
 export const EMPTY_CHECKPOINT: Checkpoint = {
@@ -315,8 +318,16 @@ export function saveWindow(s: Session, save: WindowSave, now = Date.now()): Save
     rev: uint(save.rev, 0),
     order: existing ? existing.order : nextOrder++,
   };
+  let closed = s.closed;
   if (idx >= 0) file.windows[idx] = row;
-  else file.windows.push(row);
+  else {
+    file.windows.push(row);
+    if (closed?.length) {
+      const gone = new Set(closed);
+      file.windows = file.windows.filter((w) => !gone.has(w.label));
+      closed = [];
+    }
+  }
 
   file.windows.sort((a, b) => a.order - b.order);
   // Oldest first, so overflow drops the window opened longest ago
@@ -324,7 +335,7 @@ export function saveWindow(s: Session, save: WindowSave, now = Date.now()): Save
   if (file.windows.length > MAX_WINDOWS) file.windows = file.windows.slice(-MAX_WINDOWS);
   file.updatedAt = now;
 
-  return { session: { ...s, file, nextOrder }, accepted: true, rev: row.rev };
+  return { session: { ...s, file, nextOrder, closed }, accepted: true, rev: row.rev };
 }
 
 /**
@@ -337,7 +348,13 @@ export function saveWindow(s: Session, save: WindowSave, now = Date.now()): Save
  * always relaunched into an empty one.
  */
 export function forgetWindow(s: Session, label: string, now = Date.now()): Session {
-  if (s.exiting || s.file.windows.length <= 1) return s;
+  if (s.exiting) return s;
+  if (s.file.windows.length <= 1) {
+    const closed = s.closed ?? [];
+    return s.file.windows.some((w) => w.label === label) && !closed.includes(label)
+      ? { ...s, closed: [...closed, label] }
+      : s;
+  }
   const file = clone(s.file);
   const before = file.windows.length;
   file.windows = file.windows.filter((w) => w.label !== label);

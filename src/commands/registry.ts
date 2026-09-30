@@ -11,7 +11,8 @@ import {
   openFolderDialog,
 } from "@bridge/commands";
 import { openPath } from "@shell/openDocument";
-import { checkpointOpenWindow } from "@bridge/checkpoint";
+import { checkpointOpenWindow, hostErrorMessage } from "@bridge/checkpoint";
+import { openProjectsWindow } from "@shell/projects/windowBridge";
 import { useProjects } from "@store/projects";
 import { mirrorProject } from "@shell/checkpointManager";
 import { projectRoot } from "@shell/project/ProjectPicker";
@@ -246,6 +247,20 @@ export function buildCommands(): CommandSpec[] {
       run: () => { window.dispatchEvent(new CustomEvent("spark:projects:open")); },
     },
     {
+      id: "project.manage", title: "Manage Projects…", category: "File",
+      icon: "projects",
+      keywords: ["projects", "recent", "new project", "clone", "welcome", "window", "open"],
+      run: async () => {
+        try {
+          await openProjectsWindow();
+        } catch (e: unknown) {
+          window.dispatchEvent(new CustomEvent("spark:toast:error", {
+            detail: { title: "Could not open the Projects window", body: hostErrorMessage(e) },
+          }));
+        }
+      },
+    },
+    {
       id: "project.close", title: "Close Project", category: "File",
       icon: "close",
       keywords: ["project", "workspace", "close folder"],
@@ -477,7 +492,7 @@ export function buildCommands(): CommandSpec[] {
           window.dispatchEvent(new CustomEvent("spark:toast:error", {
             detail: {
               title: "Could not open a new window",
-              body: String((e as Error)?.message ?? e),
+              body: hostErrorMessage(e),
             },
           }));
         }

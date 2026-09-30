@@ -140,6 +140,24 @@ export const listProjectFiles = (root: string, limit?: number) =>
 export const searchProject = (root: string, query: string, caseSensitive = false, limit?: number) =>
   call<ProjectSearchResult>("search_project", { root, query, caseSensitive, limit });
 
+/* ---------- New projects (Projects window) ---------- */
+export interface ProjectCreated {
+  path: string;
+  /** Set when the folder was made but `git init` failed. */
+  gitError?: string;
+}
+/** Make `parent/name` (absent or empty only), optionally `git init` it. */
+export const projectCreate = (parent: string, name: string, gitInit: boolean) =>
+  call<ProjectCreated>("project_create", { parent, name, gitInit });
+/** Clone `url` into `parent/name`. Rejects with message "cancelled" when cancelled. */
+export const projectClone = (url: string, parent: string, name: string) =>
+  call<string>("project_clone", { url, parent, name });
+/** Stop this window's clone; a no-op when none is running. */
+export const projectCloneCancel = () => call<void>("project_clone_cancel");
+/** Branch (or short commit) checked out at each root, null when not a repository. */
+export const projectGitBranches = (roots: string[]) =>
+  call<Array<string | null>>("project_git_branches", { roots });
+
 /* ---------- Path helpers ---------- */
 /**
  * Split an absolute path into ordered segments. Empty / "/" yield an empty array.
@@ -699,6 +717,25 @@ function mock<T>(cmd: string, args?: any): T {
       }
       return { hits, filesSearched: MEMORY_FS.size, truncated: false } as unknown as T;
     }
+    case "project_create": {
+      const parent = String(args?.parent ?? "");
+      const name = String(args?.name ?? "").trim();
+      if (!parent.startsWith("/") || !name || name.includes("/")) {
+        throw { kind: "InvalidPath", data: { path: name, reason: "not a folder name" } };
+      }
+      const path = `${parent.replace(/\/+$/, "")}/${name}`;
+      if (MEMORY_FS.has(path) || [...MEMORY_FS.keys()].some((k) => k.startsWith(`${path}/`))) {
+        throw { kind: "AlreadyExists", data: { path } };
+      }
+      MEMORY_DIRS.add(path);
+      return { path } as unknown as T;
+    }
+    case "project_clone":
+      throw { kind: "Internal", data: { message: "Cloning needs the desktop app" } };
+    case "project_clone_cancel":
+      return undefined as unknown as T;
+    case "project_git_branches":
+      return ((args?.roots as string[] | undefined) ?? []).map(() => null) as unknown as T;
     case "recents_get":
       return [
         "/welcome.md", "/notes.md", "/hello.ts", "/README.md",
