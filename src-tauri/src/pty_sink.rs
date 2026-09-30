@@ -79,6 +79,9 @@ pub struct TermSink {
     pub bell: bool,
     /// Whether the alternate screen was up after the last `process`.
     was_alternate: bool,
+    /// Directory the shell last reported with OSC 7. Only consulted where
+    /// the host cannot read the shell's cwd itself (see `pty::live_cwd`).
+    pub osc7_cwd: Option<String>,
 }
 
 impl TermSink {
@@ -175,6 +178,33 @@ fn first(params: &[&[u16]], default: u16) -> u16 {
         .and_then(|p| p.first().copied())
         .filter(|&v| v != 0)
         .unwrap_or(default)
+}
+
+/// The path of an OSC 7 report: `file://host/path` (every shell hook) or
+/// kitty's `kitty-shell-cwd://host/path`. Percent escapes are decoded;
+/// anything that is not an absolute path is refused.
+pub fn osc7_path(url: &[u8]) -> Option<String> {
+    let url = std::str::from_utf8(url).ok()?;
+    let rest = url
+        .strip_prefix("file://")
+        .or_else(|| url.strip_prefix("kitty-shell-cwd://"))?;
+    let path = &rest[rest.find('/')?..];
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(v) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 fn rgb_reply(code: &str, (r, g, b): (u8, u8, u8)) -> String {
@@ -344,6 +374,13 @@ impl vt100::Callbacks for TermSink {
                 self.bell = true;
             }
             [b"777", b"notify", ..] => self.bell = true,
+            // Working directory report. vt100 splits on `;`, which a path
+            // may legitimately contain, so the pieces are rejoined.
+            [b"7", rest @ ..] if !rest.is_empty() => {
+                if let Some(path) = osc7_path(&rest.join(&b';')) {
+                    self.osc7_cwd = Some(path);
+                }
+            }
             _ => {}
         }
     }
@@ -463,6 +500,17 @@ mod tests {
         assert!(std::mem::take(&mut p.callbacks_mut().bell));
         p.process(b"\x1b]9;4;1;50\x07");
         assert!(!p.callbacks().bell, "progress reports are not a bell");
+    }
+
+    #[test]
+    fn osc7_reports_the_working_directory() {
+        let mut p = parser();
+        p.process(b"\x1b]7;file://box/home/me/my%20dir\x07");
+        assert_eq!(p.callbacks().osc7_cwd.as_deref(), Some("/home/me/my dir"));
+        p.process(b"\x1b]7;kitty-shell-cwd://box/tmp/a;b\x1b\\");
+        assert_eq!(p.callbacks().osc7_cwd.as_deref(), Some("/tmp/a;b"));
+        p.process(b"\x1b]7;not a url\x07");
+        assert_eq!(p.callbacks().osc7_cwd.as_deref(), Some("/tmp/a;b"), "garbage is ignored");
     }
 
     #[test]

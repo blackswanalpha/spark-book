@@ -22,8 +22,14 @@ import { Button } from "@ui/Button";
 import { motion } from "@motion/index";
 import { renderMd } from "./renderMd";
 import "../editor.css";
-import { restoreViewState, trackScroll } from "@editor/CodeEditor/viewState";
+import { onRevealRequest, restoreViewState, trackScroll } from "@editor/CodeEditor/viewState";
 import { bindEditEvents } from "@editor/CodeEditor/editEvents";
+
+/** Route a key binding through the same event the Format menu sends. */
+function formatEvent(kind: string): boolean {
+  window.dispatchEvent(new CustomEvent(`spark:md:format:${kind}`));
+  return true;
+}
 
 export function MarkdownEditor({ docId }: { docId: string }) {
   const doc = useDocs((s) => s.docs[docId]);
@@ -67,7 +73,15 @@ export function MarkdownEditor({ docId }: { docId: string }) {
           { tag: tagExtension.list, color: "var(--syn-func)" },
           { tag: tagExtension.meta, color: "var(--syn-comment)" },
         ])),
-        keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+        keymap.of([
+          // Ahead of defaultKeymap, whose Mod-[ / Mod-] indent the line:
+          // here they are Promote / Demote Heading, as the menu says.
+          { key: "Mod-[", run: () => formatEvent("headingPromote") },
+          { key: "Mod-]", run: () => formatEvent("headingDemote") },
+          ...defaultKeymap,
+          ...historyKeymap,
+          indentWithTab,
+        ]),
         themeComp.of(EditorView.theme({}, { dark: isDark })),
         wrapComp.of(wrapRef.current ? EditorView.lineWrapping : []),
         EditorView.updateListener.of((v) => {
@@ -84,9 +98,11 @@ export function MarkdownEditor({ docId }: { docId: string }) {
     viewRef.current = v;
     const cancelRestore = restoreViewState(v, restoreRef.current.cursor, restoreRef.current.scrollTop);
     const stopTracking = trackScroll(v, (top) => setScroll(docId, top));
+    const stopReveal = onRevealRequest(docId, () => viewRef.current);
     return () => {
       cancelRestore();
       stopTracking();
+      stopReveal();
       setScroll(docId, Math.round(v.scrollDOM.scrollTop));
       v.destroy();
       viewRef.current = null;

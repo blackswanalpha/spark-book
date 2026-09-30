@@ -163,7 +163,8 @@ fn watchable_dirs(root: &Path) -> (Vec<PathBuf>, bool) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileChange {
-    /// "created" | "removed" | "modified" | "renamed"
+    /// "created" | "removed" | "modified" | "renamed", or "bulk" (empty
+    /// path) when a flush held more changes than are sent one by one.
     pub kind: String,
     pub path: String,
     /// Previous path, for a rename the OS reported as a pair.

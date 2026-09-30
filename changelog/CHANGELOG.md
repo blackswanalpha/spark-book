@@ -19,6 +19,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 
 ---
 
+## [0.10.0] — 2026-09-30
+
+Terminals keep running when hidden and reopen where you left them; projects gain search, tasks and pinning; and rich text stops overwriting Markdown and JSON with HTML.
+
+### Added
+
+- **Go to File** (Ctrl+P). Fuzzy file names across the whole project, with open tabs first. `name:42` opens the file on line 42.
+- **Find in Files** (Ctrl+Shift+F). Literal text across the project, with a match-case toggle (Alt+C). Enter opens the file on the matching line. `.git`, `node_modules`, `target`, `dist`, `build` and hidden folders are skipped.
+- **Run Task** (Ctrl+Shift+B) and **Rerun Last Task**. Offers the project's package.json scripts (npm, pnpm, yarn or bun, from the lockfile), Makefile and justfile targets, and the usual Cargo and Go commands. Each task runs in its own terminal tab, named after the task, at the project root.
+- **Terminal tabs follow the shell.** A tab is named after the directory its shell is in now, not the one it started in, and a relaunch reopens it there.
+- **Rename a terminal tab** by double-clicking it, pressing F2 on it, or running *Terminal: Rename Tab*. The name is kept across relaunches.
+- **Switch terminal tabs** with Ctrl+PageUp / Ctrl+PageDown, or *Terminal: Next Tab* / *Previous Tab*. **New Terminal** is Ctrl+Shift+`.
+- **A Terminal menu** with New Terminal, Run Task, Rerun Last Task, tab navigation, rename, close and the root toggle.
+- **Pin projects.** Pinned projects stay at the top of the switcher and the welcome screen, and are never dropped from the list for age.
+- **The project switcher works from the keyboard.** ↑/↓ choose, Enter opens. A project whose folder has gone is marked *Folder not found*.
+- **Format Code works.** Ctrl+Shift+I (or Shift+Alt+F) formats JavaScript, TypeScript, JSON, CSS/SCSS/Less, HTML, Vue, YAML, Markdown and GraphQL with Prettier, keeping the caret in place. One undo restores the original. For other languages it says there is no formatter instead of doing nothing.
+- **The mode chip in the status bar opens a menu** of the views the document can switch to.
+- **Rich text edits Markdown files.** A `.md` file switched to rich text shows its content and saves every edit back as Markdown. A file with images, tables, raw HTML, front matter, task lists or footnotes opens read-only there, with the reason and a button back to Markdown, because rich text cannot keep those.
+- Host commands `list_project_files` and `search_project`. Both walk the folder off the main thread and stop at a bounded number of entries, results and seconds, so a search rooted at a home directory still answers.
+
+### Changed
+
+- **Closing the terminal panel hides it.** The shells keep running and are there, output and all, when it opens again.
+- **Opening a file that is already open switches to its tab** instead of opening a second copy.
+- Ctrl+`, Ctrl+Shift+`, Ctrl+Shift+P and Ctrl+Shift+E reach the app while a terminal has the keyboard. Ctrl+P and Ctrl+E still go to the shell.
+- New Terminal and Toggle Root Shell moved from the View menu to the Terminal menu.
+
+### Fixed
+
+- **Hiding the terminal killed every program running in it.** A build, a dev server or an agent ended each time the panel was toggled away, and reopening it started fresh shells.
+- **Restored terminals opened where they had started, not where you left them.**
+- **Two tabs of one file could hold different text,** and saving one overwrote what had been typed into the other. Workspaces saved with duplicate tabs open with one tab per file.
+- **Opening a project whose folder had been deleted** closed the current project and left the file tree spinning. It now says *Folder not found* and stays where you are.
+- **The file tree spun forever on a folder it could not read.** The reason, such as *Permission denied*, is now shown.
+- **A crash, logout or killed process could restore an older workspace** than the one last saved. On launch the newer of the two saved copies wins.
+- A focused terminal swallowed the command palette, project switcher and terminal toggle shortcuts.
+- **The code editor's language label covered the start of line 1.** It sat over the text, wider than the line-number gutter. It now sits in the editor's toolbar beside the cursor position.
+- **Every menu click popped a "Command dispatched" notification.** Menus now just run the command.
+- **Ctrl+Shift+S saved instead of opening Save As.**
+- **Ctrl+B in the markdown and rich editors also hid or showed the sidebar.** It now only bolds there, and still toggles the sidebar everywhere else.
+- **JSON files opened in rich text, and the first keystroke replaced the file with HTML.** They open as code.
+- **Switching a Markdown file to rich text showed an empty page, and the first edit replaced the Markdown with HTML.**
+- **Rich text on any other file (code, SVG, plain text) could overwrite it with HTML.** It now shows a notice with a button to switch to Code, and no editor.
+- **Cycling modes on a PDF switched it into the image viewer.**
+- **Ctrl+[ and Ctrl+] indented the line in Markdown** instead of promoting or demoting the heading, as the Format menu says. They now do that in Markdown and rich text.
+- **Format Code did nothing**, from the menu or its shortcut.
+- **A new document switched to rich text started with the words "Start writing…"** as real text.
+
+---
+
 ## [0.9.0] — 2026-09-30
 
 The terminal becomes one that agents and full-screen programs can rely on, and the explorer and menus finally do what they say.
@@ -339,7 +389,8 @@ Initial public scaffolding. Usable in Vite (browser mock FS) and via Tauri when 
 - Session restore (`app_data_dir/recents.json`, window geometry) — host commands exist, renderer boot wiring is best-effort.
 - Single window, single user, local files only — no sync, no LSP/DAP, no collaboration (by design — see `explanation.md:7`).
 
-[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/blackswanalpha/spark-book/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.10.0
 [0.9.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.9.0
 [0.8.0]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.8.0
 [0.7.2]: https://github.com/blackswanalpha/spark-book/releases/tag/v0.7.2

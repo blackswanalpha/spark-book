@@ -13,8 +13,10 @@ import { create } from "zustand";
 import { useExplorer } from "@store/explorer";
 import { getSettings } from "@store/settings";
 import {
+  cleanName,
   closeSession as removeSession,
   createSession,
+  cycleFrom,
   findByCwd,
   nextActiveAfterClose,
   patchSession,
@@ -30,7 +32,20 @@ export interface PanelRect { x: number; y: number; w: number; h: number }
 export const DEFAULT_PANEL: PanelRect = { x: 0, y: 0, w: 720, h: 440 };
 
 /** One restored terminal tab: the shell is respawned, not replayed. */
-export interface RestoredTab { cwd: string; privilege: PtyPrivilege; label: string }
+export interface RestoredTab {
+  cwd: string;
+  privilege: PtyPrivilege;
+  label: string;
+  /** The name the user gave the tab, if any. */
+  name?: string | null;
+}
+
+/** Extras for a tab that is more than a plain shell. */
+export interface NewSessionOptions {
+  name?: string;
+  /** Typed into the shell once it starts. */
+  initialInput?: string;
+}
 
 interface TerminalState {
   isOpen: boolean;
@@ -59,9 +74,15 @@ interface TerminalState {
   /** Create the first session if the panel opened without one. */
   ensureSession: (cwd: string) => void;
   /** The "+" button: always a new tab, always focused. */
-  addSession: (cwd: string) => void;
+  addSession: (cwd: string, opts?: NewSessionOptions) => void;
   closeSession: (id: string) => void;
   setActiveSession: (id: string) => void;
+  /** Focus the next (1) or previous (-1) tab, wrapping. */
+  cycleSession: (step: 1 | -1) => void;
+  /** Name a tab; a blank name goes back to the directory. */
+  renameSession: (id: string, name: string | null) => void;
+  /** Record where a shell is now (it reports this as it `cd`s). */
+  setSessionCwd: (id: string, cwd: string) => void;
   setPrivilege: (id: string, p: PtyPrivilege) => void;
   restartSession: (id: string) => void;
   setSessionTitle: (id: string, title: string | null) => void;
@@ -142,9 +163,13 @@ export const useTerminal = create<TerminalState>((set) => ({
       return { sessions: [session], activeId: session.id, nextOrdinal: s.nextOrdinal + 1 };
     }),
 
-  addSession: (cwd) =>
+  addSession: (cwd, opts) =>
     set((s) => {
-      const session = createSession(cwd, defaultPrivilege(), s.nextOrdinal);
+      const session = {
+        ...createSession(cwd, defaultPrivilege(), s.nextOrdinal),
+        name: cleanName(opts?.name),
+        initialInput: opts?.initialInput,
+      };
       return {
         sessions: [...s.sessions, session],
         activeId: session.id,
@@ -170,10 +195,33 @@ export const useTerminal = create<TerminalState>((set) => ({
 
   setActiveSession: (id) => set({ activeId: id, restoredOpen: false }),
 
+  cycleSession: (step) =>
+    set((s) => {
+      const next = cycleFrom(s.sessions, s.activeId, step);
+      return next === s.activeId ? {} : { activeId: next, isOpen: true, restoredOpen: false };
+    }),
+
+  renameSession: (id, name) =>
+    set((s) => ({ sessions: patchSession(s.sessions, id, { name: cleanName(name) }) })),
+
+  // Both arrive with every frame. Returning the state itself for a no-op
+  // is what keeps zustand from notifying: a fresh `{}` counts as a change,
+  // and would restart the workspace autosave's debounce on every frame.
+  setSessionCwd: (id, cwd) =>
+    set((s) => {
+      const sessions = patchSession(s.sessions, id, { liveCwd: cwd });
+      return sessions === s.sessions ? s : { sessions };
+    }),
+
   // Privilege is per session and keyed by the view, so flipping it
-  // respawns that one shell and leaves the other tabs alone.
+  // respawns that one shell and leaves the other tabs alone. A task's
+  // command is dropped: re-running a build as root would leave root-owned
+  // files in the project.
   setPrivilege: (id, privilege) =>
-    set((s) => ({ sessions: patchSession(s.sessions, id, { privilege }), restoredOpen: false })),
+    set((s) => ({
+      sessions: patchSession(s.sessions, id, { privilege, initialInput: undefined }),
+      restoredOpen: false,
+    })),
 
   restartSession: (id) =>
     set((s) => ({
@@ -184,13 +232,16 @@ export const useTerminal = create<TerminalState>((set) => ({
     })),
 
   setSessionTitle: (id, title) =>
-    set((s) => ({ sessions: patchSession(s.sessions, id, { title }) })),
+    set((s) => {
+      const sessions = patchSession(s.sessions, id, { title });
+      return sessions === s.sessions ? s : { sessions };
+    }),
 
   setStatus: (id, status) =>
     set((s) => {
       // Only for a session the panel still shows; a view tearing down after
       // its tab closed must not resurrect an entry.
-      if (!s.sessions.some((x) => x.id === id) || s.statuses[id] === status) return {};
+      if (!s.sessions.some((x) => x.id === id) || s.statuses[id] === status) return s;
       return { statuses: { ...s.statuses, [id]: status } };
     }),
 
@@ -211,6 +262,7 @@ export const useTerminal = create<TerminalState>((set) => ({
       const sessions = tabs.map((t, i) => ({
         ...createSession(t.cwd, t.privilege, i + 1),
         label: t.label,
+        name: cleanName(t.name),
       }));
       const idx = activeIndex >= 0 && activeIndex < sessions.length ? activeIndex : 0;
       return {

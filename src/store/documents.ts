@@ -62,6 +62,22 @@ export function isBinaryMode(mode: DocMode): boolean {
   return BINARY_MODES.includes(mode);
 }
 
+/** The text surfaces any text document can be shown in. */
+export const TEXT_MODES: readonly DocMode[] = ["markdown", "rich", "code", "html", "svg"];
+
+/**
+ * The modes `doc` can switch to, its current one included, in cycle
+ * order. Binary documents only move between surfaces built for their
+ * bytes: a PDF used to cycle into the image viewer, because both are
+ * "binary". An animation can also be read as its JSON source.
+ */
+export function switchableModes(doc: Pick<OpenDoc, "mode" | "binary">): DocMode[] {
+  if (isStreamMode(doc.mode) || doc.mode === "pdf") return [doc.mode];
+  if (doc.binary) return ["image", "imageedit"];
+  if (doc.mode === "animation") return ["animation", "code"];
+  return [...TEXT_MODES];
+}
+
 /** True when documents in `mode` stream from their path and are read-only. */
 export function isStreamMode(mode: DocMode): boolean {
   return STREAM_MODES.includes(mode);
@@ -167,9 +183,8 @@ export const useDocs = create<State & Actions>((set, get) => ({
      or a PDF either. */
   setMode: (id, mode) => set((s) => {
     const doc = s.docs[id];
-    if (!doc) return s;
-    if (isBinaryMode(mode) !== doc.binary) return s;
-    if ((isStreamMode(mode) || isStreamMode(doc.mode)) && mode !== doc.mode) return s;
+    if (!doc || doc.mode === mode) return s;
+    if (!switchableModes(doc).includes(mode)) return s;
     return { docs: { ...s.docs, [id]: { ...doc, mode } } };
   }),
 

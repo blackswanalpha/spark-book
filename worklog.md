@@ -4,6 +4,21 @@ Chronological build log. Each entry is dated, scoped, and linked to the Changelo
 
 ---
 
+## 2026-09-30 — Terminal sessions that survive, project search and tasks
+
+- **Scope:** `src-tauri/src/{project.rs (new),pty.rs,pty_sink.rs,checkpoint.rs,lib.rs}`, `src/shell/project/{ProjectPicker.tsx,ProjectPicker.css,fuzzy.ts,tasks.ts}` (new), `src/shell/{TerminalPanel,ProjectSwitcher,SideBar,MenuBar}.tsx`, `src/shell/Terminal/{TerminalView.tsx,sessions.ts}`, `src/shell/{workspace,openDocument,checkpointManager}.ts`, `src/store/{terminal,projects,checkpoint}.ts`, `src/bridge/{commands,pty}.ts`, `src/commands/registry.ts`, `src/editor/{CodeEditor,MarkdownEditor}/index.tsx`, `src/editor/CodeEditor/viewState.ts`, `src/App.tsx`, `src/ui/Icon.tsx`. PR #39.
+- **What:** Go to File, Find in Files and Run Task share one picker (`spark:project:picker` with `{ mode }`), backed by two new async host commands that walk the root on the blocking pool. The host now puts the shell's live directory on every frame (`/proc/<pid>/cwd`, OSC 7 as fallback). The session keeps it as `liveCwd` beside the spawn `cwd`, which keys the view and must not change. Tabs can be named. The panel is hidden rather than unmounted. Projects can be pinned, with the flag carried through the checkpoint in both the TS and Rust copies of `ProjectRecord`/`ProjectSave`.
+- **Found by running it:** drove the debug build under Xvfb with a scratch `XDG_*` profile.
+  1. `TerminalDialog` returned `null` when closed. `TerminalView` kills its pty on unmount, so every toggle ended every shell. The 0.4.0 rule was "sessions stay mounted while hidden", but it had only been applied to tab switching.
+  2. Saved terminal cwd was the spawn directory, so `cd` was lost on relaunch.
+  3. `openPath` had no dedupe. Two tabs of one file held two buffers.
+  4. `TreeLevel` tested "no children yet" before "load failed", so a failed `read_dir` spun forever.
+  5. Opening a deleted project folder switched into it.
+  6. `TerminalView` encoded every chord, so Ctrl+` reached the shell as NUL.
+  7. The checkpoint mirror lands one debounce after the projects save and boot always preferred it, so a SIGTERM between the two restored the older workspace. `seedProjects` now keeps the newer row by `lastOpened`.
+- **Decisions:** `liveCwd` is separate from `cwd` because `cwd` is part of the view key: moving it would respawn the shell under the user. The kernel's answer beats OSC 7 because it needs no shell cooperation and a program's output cannot fake it. A restored-but-closed panel stays unmounted until first opened, so a relaunch spawns no shells nobody asked for. A task's command is dropped when the tab flips to root, so a restart never re-runs a build as root. `setSessionTitle`/`setSessionCwd`/`setStatus` return the state itself on a no-op: a fresh `{}` still notifies zustand, which reset the workspace autosave debounce on every frame. Nothing is written into project folders; tasks are read from files the project already has.
+- **Verification:** `npm run ci` (702 tests, 42 new; lint 0 errors, warning count unchanged) and `cargo test` (70). In the real app I checked: tab label after `cd`; Ctrl+Shift+` and Ctrl+PageUp from inside a shell; Ctrl+` hide/show keeping scrollback; quit via SIGTERM and relaunch landing both tabs in their live directories with the name kept; Go to File with `:2`; Find in Files; Run Task running `npm run test` in a named tab; switcher arrows/Enter, pin and the missing-folder marker; the *Folder not found* refusal; *Permission denied* shown for a `chmod 000` folder; an old snapshot with four copies of one file restoring as one tab.
+
 ## 2026-08-31 — Projects and workspace restore
 
 - **Scope:** `src/store/projects.ts` (new), `src/shell/workspace.ts` (new), `src/shell/ProjectSwitcher.tsx` (new), `src/editor/CodeEditor/viewState.ts` (new), `src/App.tsx`, `src/store/{documents,terminal,explorer}.ts`, `src/shell/{TitleBar,TerminalPanel,SideBar,Onboarding,SplashScreen,firstRun,MenuBar}.tsx`, `src/editor/{CodeEditor,MarkdownEditor}/index.tsx`, `src/commands/registry.ts`, `src/bridge/commands.ts`, `docs/reference/{projects-json,app-state,renderer-modules,README,build-and-config}.md`, `docs/explanation/state-and-persistence.md`, `docs/how-to/{reset-app-state,customise-keybindings}.md`.

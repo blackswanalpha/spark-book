@@ -156,6 +156,10 @@ pub struct Frame {
     pub kitty_flags: u8,
     /// Frame counter — lets the renderer drop out-of-order deliveries.
     pub seq: u64,
+    /// Where the shell is now, which `cd` moves away from the directory
+    /// it was spawned in. Absent when it cannot be determined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +216,8 @@ struct Session {
     writer: Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    /// The shell's process id, for reading its working directory.
+    pid: Option<u32>,
     /// Set once the reader thread has seen EOF or `kill` was called;
     /// the reader loop and the frame pump both use it to stop.
     closed: Arc<AtomicBool>,
@@ -570,7 +576,24 @@ fn build_frame(session: &Session, force_full: bool) -> Result<Frame, HostError> 
         focus_reporting: parser.callbacks().focus_reporting,
         kitty_flags: parser.callbacks().kitty_flags(screen.alternate_screen()),
         seq: session.seq.fetch_add(1, Ordering::SeqCst),
+        cwd: live_cwd(session.pid, parser.callbacks().osc7_cwd.as_deref()),
     })
+}
+
+/// The shell's current directory. The kernel's answer comes first: it
+/// needs no cooperation from the shell and cannot be spoofed by output a
+/// program prints. OSC 7 covers what the kernel will not tell us — a
+/// root shell owned by another uid, or a platform without `/proc`.
+fn live_cwd(pid: Option<u32>, osc7: Option<&str>) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = pid {
+        if let Ok(path) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
+            return Some(path.to_string_lossy().into_owned());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = pid;
+    osc7.map(str::to_owned)
 }
 
 fn emit_frame(app: &AppHandle, session: &Session, force_full: bool) {
@@ -910,6 +933,7 @@ pub fn pty_spawn(
         last_bell: Mutex::new(None),
         writer: Mutex::new(Some(spawn_writer(writer))),
         master: Mutex::new(pair.master),
+        pid: child.process_id(),
         child: Mutex::new(child),
         closed: Arc::new(AtomicBool::new(false)),
         dirty: Arc::new(Signal::default()),

@@ -44,7 +44,7 @@ import {
   type ProjectRecord,
   type WindowRecord,
 } from "@store/checkpoint";
-import { useProjects, SCHEMA_VERSION, type Project } from "@store/projects";
+import { useProjects, SCHEMA_VERSION, byPinThenRecency, type Project } from "@store/projects";
 import { captureWorkspace, isRestoring } from "@shell/workspace";
 
 /** Matches the workspace autosave, so the two settle in one beat. */
@@ -95,6 +95,7 @@ function toProject(rec: ProjectRecord): Project {
     rootPath: rec.rootPath,
     name: rec.name,
     lastOpened: rec.lastOpened,
+    pinned: rec.pinned === true,
     workspace: rec.workspace,
   };
 }
@@ -168,14 +169,21 @@ export function bootCheckpoint(label = currentWindowLabel()): Promise<Checkpoint
 /**
  * Fold the host's project rows into the projects store. The checkpoint
  * wins over the local mirror: it is the copy every window writes
- * through, so it is the one that saw the other windows.
+ * through, so it is the one that saw the other windows — unless the
+ * local copy of that project is newer. The mirror lands one debounce
+ * after the local save, so a quit that skips the flush (a crash, a
+ * logout's SIGTERM) left the checkpoint a step behind, and boot restored
+ * the older workspace over the newer one.
  */
 export function seedProjects(rows: Project[], activeId: string | null) {
   const s = useProjects.getState();
   const byId = new Map<string, Project>();
   for (const p of s.projects) byId.set(p.id, p);
-  for (const p of rows) byId.set(p.id, p);
-  const projects = [...byId.values()].sort((a, b) => b.lastOpened - a.lastOpened);
+  for (const p of rows) {
+    const local = byId.get(p.id);
+    if (!local || p.lastOpened >= local.lastOpened) byId.set(p.id, p);
+  }
+  const projects = [...byId.values()].sort(byPinThenRecency);
   useProjects.setState({
     version: SCHEMA_VERSION,
     projects,
@@ -228,6 +236,7 @@ async function writeNow(gen: number): Promise<void> {
     lastOpened: active.lastOpened || Date.now(),
     rev: nextRev(),
     writer: live.label,
+    pinned: active.pinned === true,
     workspace,
   });
   if (gen !== generation || !live) return;
@@ -335,6 +344,7 @@ export function mirrorProject(project: Project): Promise<unknown> {
     lastOpened: project.lastOpened || Date.now(),
     rev: nextRev(),
     writer: live?.label ?? currentWindowLabel(),
+    pinned: project.pinned === true,
     workspace: project.workspace,
   }).catch(() => undefined);
 }

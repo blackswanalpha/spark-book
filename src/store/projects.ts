@@ -41,9 +41,13 @@ export interface ExplorerSnapshot {
 }
 
 export interface TerminalTabSnapshot {
+  /** Where the shell was when the snapshot was taken, not where it
+      started: a restored tab reopens in the directory it was left in. */
   cwd: string;
   privilege: PtyPrivilege;
   label: string;
+  /** Name the user gave the tab; absent when it has none. */
+  name?: string;
 }
 
 export interface TerminalSnapshot {
@@ -77,6 +81,8 @@ export interface Project {
   name: string;
   /** Epoch ms. */
   lastOpened: number;
+  /** Pinned projects list first and are never dropped for age. */
+  pinned?: boolean;
   workspace: Workspace;
 }
 
@@ -194,10 +200,12 @@ function coerceTerminal(raw: unknown): TerminalSnapshot {
       const t = item as Record<string, unknown>;
       const cwd = str(t.cwd);
       if (!cwd) continue;
+      const name = str(t.name);
       tabs.push({
         cwd,
         privilege: t.privilege === "root" ? "root" : "user",
         label: str(t.label) ?? `Terminal ${tabs.length + 1}`,
+        ...(name ? { name } : {}),
       });
       if (tabs.length >= MAX_RESTORE_TABS) break;
     }
@@ -267,8 +275,15 @@ function coerceProject(raw: unknown): Project | null {
     rootPath,
     name: str(r.name) ?? defaultName(rootPath),
     lastOpened: Math.max(0, num(r.lastOpened, 0)),
+    ...(r.pinned === true ? { pinned: true } : {}),
     workspace: coerceWorkspace(r.workspace),
   };
+}
+
+/** Pinned first, then most recently opened. */
+export function byPinThenRecency(a: Project, b: Project): number {
+  const pin = Number(b.pinned === true) - Number(a.pinned === true);
+  return pin || b.lastOpened - a.lastOpened;
 }
 
 export function coerce(raw: unknown): ProjectsCache {
@@ -288,7 +303,7 @@ export function coerce(raw: unknown): ProjectsCache {
       projects.push(p);
     }
   }
-  projects.sort((a, b) => b.lastOpened - a.lastOpened);
+  projects.sort(byPinThenRecency);
   projects.length = Math.min(projects.length, MAX_PROJECTS);
 
   const activeId = str(r.activeId);
@@ -364,12 +379,14 @@ interface ProjectsState extends ProjectsCache {
   /** Replace the active project's workspace snapshot. */
   saveWorkspace: (workspace: Workspace) => void;
   renameProject: (id: string, name: string) => void;
+  /** Pin or unpin; returns the updated project. */
+  togglePin: (id: string) => Project | null;
   removeProject: (id: string) => void;
   clearActive: () => void;
 }
 
 function commit(next: ProjectsCache): ProjectsCache {
-  next.projects.sort((a, b) => b.lastOpened - a.lastOpened);
+  next.projects.sort(byPinThenRecency);
   next.projects.length = Math.min(next.projects.length, MAX_PROJECTS);
   if (next.activeId && !next.projects.some((p) => p.id === next.activeId)) next.activeId = null;
   persist(next);
@@ -436,6 +453,18 @@ export const useProjects = create<ProjectsState>((set, get) => {
       const next = snapshot(s);
       next.projects[idx] = { ...next.projects[idx], name: trimmed };
       set(commit(next));
+    },
+
+    togglePin: (id) => {
+      const s = get();
+      const idx = s.projects.findIndex((p) => p.id === id);
+      if (idx < 0) return null;
+      const next = snapshot(s);
+      const { pinned, ...rest } = next.projects[idx];
+      const updated: Project = pinned ? rest : { ...rest, pinned: true };
+      next.projects[idx] = updated;
+      set(commit(next));
+      return updated;
     },
 
     removeProject: (id) => {

@@ -141,6 +141,26 @@ describe("captureWorkspace", () => {
   });
 });
 
+describe("captureWorkspace — terminals", () => {
+  it("saves where each shell is now, and its name, so a relaunch lands there", () => {
+    useTerminal.getState().restoreTabs(
+      [
+        { cwd: "/proj", privilege: "user", label: "Terminal 1" },
+        { cwd: "/proj", privilege: "user", label: "Terminal 2" },
+      ],
+      0,
+      3,
+      true,
+    );
+    const [a, b] = useTerminal.getState().sessions;
+    useTerminal.getState().setSessionCwd(a.id, "/proj/src/deep");
+    useTerminal.getState().renameSession(b.id, "server");
+    const tabs = captureWorkspace().terminal.tabs;
+    expect(tabs[0]).toEqual({ cwd: "/proj/src/deep", privilege: "user", label: "Terminal 1" });
+    expect(tabs[1]).toEqual({ cwd: "/proj", privilege: "user", label: "Terminal 2", name: "server" });
+  });
+});
+
 describe("restoreWorkspace", () => {
   it("reopens tabs in order and focuses the saved one", async () => {
     const result = await restoreWorkspace({
@@ -421,5 +441,21 @@ describe("quit and relaunch", () => {
     await restoreWorkspace(useProjects.getState().get("/docs")!.workspace);
     const d = useDocs.getState();
     expect(d.order.map((id) => d.docs[id].path)).toEqual(["/docs/README.md"]);
+  });
+});
+
+describe("restoreWorkspace — one tab per file", () => {
+  it("drops duplicate paths from an old snapshot and keeps the active one in front", async () => {
+    const tab = (path: string) => ({ path, mode: "code" as const, cursor: { line: 1, col: 1 }, scrollTop: 0 });
+    const ws = {
+      ...EMPTY_WORKSPACE,
+      tabs: [tab("/hello.ts"), tab("/hello.ts"), tab("/notes.md"), tab("/hello.ts")],
+      activeIndex: 3,
+    };
+    const res = await restoreWorkspace(ws);
+    const d = useDocs.getState();
+    expect(res.opened).toBe(2);
+    expect(d.order.map((id) => d.docs[id].path)).toEqual(["/hello.ts", "/notes.md"]);
+    expect(d.docs[d.active as string].path).toBe("/hello.ts");
   });
 });

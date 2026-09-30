@@ -295,3 +295,24 @@ describe("round trip", () => {
     expect(third.pending).toBeNull();
   });
 });
+
+describe("pinned projects", () => {
+  const rec = (id: string, lastOpened: number, pinned = false) => ({
+    id, rootPath: id, name: id, lastOpened, rev: 1, writer: "main", pinned, workspace: EMPTY_WORKSPACE,
+  });
+
+  it("survive the load-time cap and keep their flag", () => {
+    const rows = Array.from({ length: MAX_CHECKPOINT_PROJECTS + 3 }, (_, i) => rec(`/p${i}`, 100 + i));
+    const cp = coerceCheckpoint({ version: 1, projects: [...rows, rec("/old", 1, true)], windows: [] });
+    expect(cp.projects).toHaveLength(MAX_CHECKPOINT_PROJECTS);
+    expect(cp.projects[0]).toMatchObject({ id: "/old", pinned: true });
+  });
+
+  it("are carried through a save", () => {
+    const s = openSession(null, 1);
+    const save: ProjectSave = { id: "/a", rootPath: "/a", name: "a", lastOpened: 5, rev: 1, writer: "main", pinned: true, workspace: EMPTY_WORKSPACE };
+    const res = saveProject(s, save, 10);
+    expect(res.accepted).toBe(true);
+    expect(res.session.file.projects[0].pinned).toBe(true);
+  });
+});

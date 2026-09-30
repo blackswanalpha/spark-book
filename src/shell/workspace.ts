@@ -14,10 +14,11 @@
    back into the cache they came from.
    ============================================================ */
 import { isTauri } from "@bridge/commands";
-import { readForMode } from "./openDocument";
+import { findOpenDoc, readForMode } from "./openDocument";
 import { useDocs, isBinaryMode } from "@store/documents";
 import { useExplorer } from "@store/explorer";
 import { useTerminal } from "@store/terminal";
+import { currentCwd } from "@shell/Terminal/sessions";
 import {
   useProjects,
   EMPTY_WORKSPACE,
@@ -97,9 +98,10 @@ export function captureWorkspace(): Workspace {
     },
     terminal: {
       tabs: t.sessions.slice(0, MAX_RESTORE_TABS).map((s) => ({
-        cwd: s.cwd,
+        cwd: currentCwd(s),
         privilege: s.privilege,
         label: s.label,
+        ...(s.name ? { name: s.name } : {}),
       })),
       activeIndex: terminalActive >= 0 ? terminalActive : t.sessions.length ? 0 : -1,
       isOpen: t.isOpen,
@@ -164,8 +166,19 @@ export async function restoreWorkspace(ws: Workspace): Promise<RestoreResult> {
       }
     }
 
-    /* 2. Tabs. Reads run in parallel; a rejection means the file is gone. */
-    const wanted = ws.tabs.slice(0, MAX_RESTORE_TABS);
+    /* 2. Tabs. Reads run in parallel; a rejection means the file is gone.
+          One tab per path: snapshots from before openPath refused
+          duplicates can hold the same file several times, and a file
+          that is already open is not opened again. */
+    const seen = new Set<string>();
+    const wanted = ws.tabs
+      .filter((t) => {
+        if (seen.has(t.path) || findOpenDoc(t.path)) return false;
+        seen.add(t.path);
+        return true;
+      })
+      .slice(0, MAX_RESTORE_TABS);
+    const activePath = ws.tabs[ws.activeIndex]?.path ?? null;
     // Image and PDF tabs hold bytes, not text: reading them through
     // `readFile` would return mojibake (or fail on invalid UTF-8). Video
     // and audio tabs are not read at all; they stream from the path.
@@ -191,7 +204,7 @@ export async function restoreWorkspace(ws: Workspace): Promise<RestoreResult> {
         scrollTop: tab.scrollTop,
       });
       ids.push(id);
-      if (i === ws.activeIndex) activeId = id;
+      if (tab.path === activePath) activeId = id;
     });
 
     /* 3. Active tab. `open` focuses each doc as it lands, so the saved

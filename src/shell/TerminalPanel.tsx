@@ -33,8 +33,11 @@ import { isTauri } from "@bridge/commands";
 import { ptyRootSupport, type PtyPrivilege, type RootSupport } from "@bridge/pty";
 import { TerminalView, detachOnUnmount, type TerminalStatus } from "./Terminal/TerminalView";
 import {
+  cleanName,
   createSession,
   closeSession as removeSession,
+  currentCwd,
+  cycleFrom,
   displayName,
   sessionTooltip,
   nextActiveAfterClose,
@@ -136,6 +139,7 @@ function SessionTabs({
   onSelect,
   onClose,
   onAdd,
+  onRename,
   children,
 }: {
   sessions: TerminalSession[];
@@ -145,10 +149,36 @@ function SessionTabs({
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onAdd: () => void;
+  /** Name a tab; null clears the name. */
+  onRename: (id: string, name: string | null) => void;
   children?: React.ReactNode;
 }) {
   const stripRef = useRef<HTMLDivElement | null>(null);
   const countRef = useRef(sessions.length);
+
+  /* Renaming: double-click a tab, press F2 on it, or run "Terminal:
+     Rename Tab". Many shells in one project all read "src" otherwise. */
+  const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null);
+  const startRename = useCallback(
+    (id: string) => {
+      const s = sessions.find((x) => x.id === id);
+      if (s) setRenaming({ id, draft: s.name ?? displayName(s) });
+    },
+    [sessions],
+  );
+  const commitRename = useCallback(() => {
+    setRenaming((r) => {
+      if (r) onRename(r.id, cleanName(r.draft));
+      return null;
+    });
+  }, [onRename]);
+  useEffect(() => {
+    const onReq = () => {
+      if (activeId) startRename(activeId);
+    };
+    window.addEventListener("spark:terminal:rename", onReq);
+    return () => window.removeEventListener("spark:terminal:rename", onReq);
+  }, [activeId, startRename]);
 
   /* A new tab is appended off the right edge once the strip fills up;
      scrolling to it is the difference between "+" appearing to work and
@@ -206,6 +236,10 @@ function SessionTabs({
         e.preventDefault();
         onClose(id);
         return;
+      case "F2":
+        e.preventDefault();
+        startRename(id);
+        return;
       default:
         return;
     }
@@ -234,6 +268,7 @@ function SessionTabs({
               aria-controls={`term-panel-${s.id}`}
               title={sessionTooltip(s)}
               onClick={() => onSelect(s.id)}
+              onDoubleClick={() => startRename(s.id)}
               onKeyDown={(e) => onTabKeyDown(e, s.id)}
               onAuxClick={(e) => {
                 // Middle-click closes, as it does on the editor's own tabs.
@@ -248,7 +283,29 @@ function SessionTabs({
                 size={13}
                 className={s.privilege === "root" ? "term__tabIcon--root" : undefined}
               />
-              <span className="term__tabName">{displayName(s)}</span>
+              {renaming?.id === s.id ? (
+                <input
+                  className="term__tabRename"
+                  value={renaming.draft}
+                  aria-label="Tab name"
+                  placeholder={displayName({ ...s, name: null })}
+                  autoFocus
+                  onFocus={(e) => e.currentTarget.select()}
+                  onChange={(e) => setRenaming({ id: s.id, draft: e.target.value })}
+                  onBlur={commitRename}
+                  onClick={(e) => e.stopPropagation()}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    // The tab's own keys (arrows, Delete, Enter) must not
+                    // act while its name is being typed.
+                    e.stopPropagation();
+                    if (e.key === "Enter") commitRename();
+                    else if (e.key === "Escape") setRenaming(null);
+                  }}
+                />
+              ) : (
+                <span className="term__tabName">{displayName(s)}</span>
+              )}
               {attention?.has(s.id) && (
                 <span className="term__tabBell" role="status" aria-label="Needs attention" />
               )}
@@ -294,6 +351,7 @@ function SessionSurfaces({
   focusOnShow = true,
   onStatus,
   onTitle,
+  onCwd,
   onBell,
 }: {
   sessions: TerminalSession[];
@@ -303,6 +361,7 @@ function SessionSurfaces({
   focusOnShow?: boolean;
   onStatus: (id: string, s: TerminalStatus) => void;
   onTitle: (id: string, t: string | null) => void;
+  onCwd: (id: string, cwd: string) => void;
   onBell?: (id: string) => void;
 }) {
   return (
@@ -325,9 +384,11 @@ function SessionSurfaces({
             privilege={s.privilege}
             restartKey={s.restartKey}
             adopt={s.adopt}
+            initialInput={s.initialInput}
             focusOnShow={focusOnShow}
             onStatus={(st) => onStatus(s.id, st)}
             onTitle={(t) => onTitle(s.id, t)}
+            onCwd={(c) => onCwd(s.id, c)}
             onBell={() => onBell?.(s.id)}
           />
         </div>
@@ -373,6 +434,8 @@ export function TerminalDialog({
   const setPrivilege = useTerminal((s) => s.setPrivilege);
   const restartSession = useTerminal((s) => s.restartSession);
   const setSessionTitle = useTerminal((s) => s.setSessionTitle);
+  const setSessionCwd = useTerminal((s) => s.setSessionCwd);
+  const renameSession = useTerminal((s) => s.renameSession);
   const statuses = useTerminal((s) => s.statuses);
   const setStatus = useTerminal((s) => s.setStatus);
   const mobileW = useSettings((s) => s.settings.terminal.mobileWidth);
@@ -406,6 +469,12 @@ export function TerminalDialog({
 
   const [rootSupport, setRootSupport] = useState<RootSupport | null>(null);
   const [popping, setPopping] = useState(false);
+  /** The panel's shells have been started (it was opened with these tabs). */
+  const [spawned, setSpawned] = useState(open);
+  useEffect(() => {
+    if (open) setSpawned(true);
+    else if (sessions.length === 0) setSpawned(false);
+  }, [open, sessions.length]);
 
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -438,6 +507,17 @@ export function TerminalDialog({
     window.addEventListener("spark:terminal:new", onNew);
     return () => window.removeEventListener("spark:terminal:new", onNew);
   }, [addSession, newCwd]);
+
+  /* Next/previous tab: Ctrl+PageDown/PageUp inside a shell, or the
+     palette. The pop-out window answers the same event for its tabs. */
+  useEffect(() => {
+    const onCycle = (e: Event) => {
+      const step = (e as CustomEvent<{ step: 1 | -1 }>).detail?.step ?? 1;
+      useTerminal.getState().cycleSession(step);
+    };
+    window.addEventListener("spark:terminal:cycle", onCycle);
+    return () => window.removeEventListener("spark:terminal:cycle", onCycle);
+  }, []);
 
   /* Place the panel bottom-right on first open, then leave it where the
      user put it — re-centring on every open loses their arrangement. */
@@ -498,6 +578,11 @@ export function TerminalDialog({
   const onTitle = useCallback(
     (id: string, t: string | null) => setSessionTitle(id, t),
     [setSessionTitle],
+  );
+
+  const onCwd = useCallback(
+    (id: string, cwd: string) => setSessionCwd(id, cwd),
+    [setSessionCwd],
   );
 
   /* ---------- Drag ---------- */
@@ -595,13 +680,14 @@ export function TerminalDialog({
         await existing.setFocus();
         return;
       }
-      const cwd = active?.cwd ?? newCwd;
+      const cwd = active ? currentCwd(active) : newCwd;
       const moving: PoppedTab[] = sessions.map((s) => {
         const st = statuses[s.id];
         return {
-          cwd: s.cwd,
+          cwd: currentCwd(s),
           privilege: s.privilege,
           label: s.label,
+          name: s.name ?? null,
           adopt: st?.phase === "running" ? st.id : undefined,
         };
       });
@@ -664,11 +750,19 @@ export function TerminalDialog({
   const isRoot = active?.privilege === "root";
   const rootBlocked = rootSupport != null && !rootSupport.available;
 
-  if (!open) return null;
+  /* Closing the panel hides it; it does not unmount it. TerminalView
+     ends its shell on unmount, so returning null here killed every
+     running program — a build, a dev server, an agent mid-task — each
+     time the panel was toggled away, and reopening it respawned fresh
+     shells. A panel that has not been opened since its tabs were
+     restored stays unmounted, so a relaunch does not spawn shells
+     nobody has asked to see yet. */
+  if (!open && (!spawned || sessions.length === 0)) return null;
 
   return (
     <div
       className={`term term--floating ${isRoot ? "term--root" : ""} ${mobile ? "term--mobile" : ""}`}
+      hidden={!open}
       role="dialog"
       aria-label="Terminal"
       aria-modal="false"
@@ -694,8 +788,8 @@ export function TerminalDialog({
           <Icon name="terminal" size={16} />
           <span>{active ? displayName(active) : "Terminal"}</span>
           {isRoot && <span className="term__badge term__badge--root">root</span>}
-          <span className="term__cwd" title={active?.cwd}>
-            {active?.cwd}
+          <span className="term__cwd" title={active ? currentCwd(active) : undefined}>
+            {active ? currentCwd(active) : null}
           </span>
         </div>
 
@@ -746,6 +840,7 @@ export function TerminalDialog({
         onSelect={setActiveSession}
         onClose={closeSessionById}
         onAdd={() => addSession(newCwd)}
+        onRename={renameSession}
       >
         <button
           type="button"
@@ -786,6 +881,7 @@ export function TerminalDialog({
         focusOnShow={!restoredOpen}
         onStatus={onStatus}
         onTitle={onTitle}
+        onCwd={onCwd}
         onBell={ring}
       />
 
@@ -855,6 +951,7 @@ export function TerminalStandaloneInner({
     const sessions = seed.map((t, i) => ({
       ...createSession(t.cwd, t.privilege, i + 1),
       label: t.label,
+      name: cleanName(t.name),
       adopt: t.adopt,
     }));
     const idx = activeIndex >= 0 && activeIndex < sessions.length ? activeIndex : 0;
@@ -871,7 +968,7 @@ export function TerminalStandaloneInner({
 
   useEffect(() => {
     const name = active ? displayName(active) : "Terminal";
-    document.title = `${name} — ${active?.cwd ?? cwd}`;
+    document.title = `${name} — ${active ? currentCwd(active) : cwd}`;
   }, [active, cwd]);
 
   const setActiveId = useCallback((id: string) => {
@@ -902,7 +999,7 @@ export function TerminalStandaloneInner({
       // tree to derive a different directory from.
       const from = st.sessions.find((s) => s.id === st.activeId) ?? st.sessions[st.sessions.length - 1];
       const session = createSession(
-        from?.cwd ?? cwd,
+        from ? currentCwd(from) : cwd,
         from?.privilege ?? privilege,
         st.nextOrdinal,
       );
@@ -919,6 +1016,30 @@ export function TerminalStandaloneInner({
       const sessions = patchSession(st.sessions, id, { title });
       return sessions === st.sessions ? st : { ...st, sessions };
     });
+  }, []);
+
+  const onCwd = useCallback((id: string, liveCwd: string) => {
+    setState((st) => {
+      const sessions = patchSession(st.sessions, id, { liveCwd });
+      return sessions === st.sessions ? st : { ...st, sessions };
+    });
+  }, []);
+
+  const onRename = useCallback((id: string, name: string | null) => {
+    setState((st) => ({ ...st, sessions: patchSession(st.sessions, id, { name }) }));
+  }, []);
+
+  /* Ctrl+PageUp / Ctrl+PageDown move between tabs, as in the panel. */
+  useEffect(() => {
+    const onCycle = (e: Event) => {
+      const step = (e as CustomEvent<{ step: 1 | -1 }>).detail?.step ?? 1;
+      setState((st) => {
+        const next = cycleFrom(st.sessions, st.activeId, step);
+        return next === st.activeId ? st : { ...st, activeId: next };
+      });
+    };
+    window.addEventListener("spark:terminal:cycle", onCycle);
+    return () => window.removeEventListener("spark:terminal:cycle", onCycle);
   }, []);
 
   const onRestart = useCallback(() => {
@@ -992,6 +1113,7 @@ export function TerminalStandaloneInner({
         onSelect={setActiveId}
         onClose={onClose}
         onAdd={onAdd}
+        onRename={onRename}
       >
         <button
           type="button"
@@ -1011,6 +1133,7 @@ export function TerminalStandaloneInner({
         holderClass="term-standalone__body"
         onStatus={noop}
         onTitle={onTitle}
+        onCwd={onCwd}
         onBell={ring}
       />
     </div>

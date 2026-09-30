@@ -911,11 +911,14 @@ function TreeLevel({ dirPath, depth, unfiltered }: { dirPath: string; depth: num
     />
   );
 
+  // The error comes first: a directory that failed to list has no
+  // children, and checking for those first left it on "Loading…" forever
+  // (a deleted project folder, a directory without read permission).
+  if (error && !isLoading && (!visible || visible.length === 0)) {
+    return <div role="group">{createRow}<div className="tree-empty" style={{ paddingLeft: indentFor(depth) }}>{error}</div></div>;
+  }
   if (!visible || (isLoading && visible.length === 0)) {
     return <div role="group">{createRow}<LoadingRow depth={depth} /></div>;
-  }
-  if (error && visible.length === 0) {
-    return <div role="group">{createRow}<div className="tree-empty" style={{ paddingLeft: indentFor(depth) }}>{error}</div></div>;
   }
   if (visible.length === 0) {
     return (

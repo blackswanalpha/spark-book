@@ -8,7 +8,7 @@
    ============================================================ */
 import type { EditorState } from "@codemirror/state";
 import { EditorSelection } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 
 export interface ViewCursor {
   line: number;
@@ -60,6 +60,33 @@ export function restoreViewState(
     view.scrollDOM.scrollTop = top;
   });
   return () => cancelAnimationFrame(frame);
+}
+
+/**
+ * Move the caret to (line, col) and scroll it to the middle of the view.
+ * Used when a search result or `file:line` jump lands in an open editor.
+ */
+export function revealCursor(view: EditorView, cursor: ViewCursor): void {
+  const pos = posFromCursor(view.state, cursor);
+  view.dispatch({
+    selection: EditorSelection.cursor(pos),
+    effects: EditorView.scrollIntoView(pos, { y: "center" }),
+  });
+  view.focus();
+}
+
+/**
+ * Listen for `spark:editor:reveal` aimed at `docId`. Returns a teardown.
+ */
+export function onRevealRequest(docId: string, view: () => EditorView | null): () => void {
+  const handler = (e: Event) => {
+    const d = (e as CustomEvent<{ id: string; line: number; col?: number }>).detail;
+    const v = view();
+    if (!v || !d || d.id !== docId) return;
+    revealCursor(v, { line: d.line, col: d.col ?? 1 });
+  };
+  window.addEventListener("spark:editor:reveal", handler);
+  return () => window.removeEventListener("spark:editor:reveal", handler);
 }
 
 /**

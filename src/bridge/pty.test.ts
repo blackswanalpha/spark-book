@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@bridge/commands", () => ({ isTauri: false }));
 
 import {
+  appShortcut,
   clipboardIntent,
   ctrlVBytes,
   decodeClipboard,
@@ -310,5 +311,28 @@ describe("decodeClipboard", () => {
     expect(decodeClipboard("aGVsbG8=")).toBe("hello");
     expect(decodeClipboard(btoa(String.fromCharCode(...new TextEncoder().encode("é→"))))).toBe("é→");
     expect(decodeClipboard("%%%")).toBe("");
+  });
+});
+
+describe("appShortcut — keys a focused terminal must not swallow", () => {
+  const k = (init: Partial<KeyboardEvent> & { key: string }) => key({ code: "", ...init });
+
+  it("hands the terminal toggles, palette and project switcher to the app", () => {
+    expect(appShortcut(k({ key: "`", code: "Backquote", ctrlKey: true }))).toBe("app");
+    expect(appShortcut(k({ key: "~", code: "Backquote", ctrlKey: true, shiftKey: true }))).toBe("app");
+    expect(appShortcut(k({ key: "P", ctrlKey: true, shiftKey: true }))).toBe("app");
+    expect(appShortcut(k({ key: "E", ctrlKey: true, shiftKey: true }))).toBe("app");
+  });
+
+  it("maps Ctrl+PageUp/PageDown to tab switching", () => {
+    expect(appShortcut(k({ key: "PageDown", ctrlKey: true }))).toBe("next-tab");
+    expect(appShortcut(k({ key: "PageUp", ctrlKey: true }))).toBe("prev-tab");
+  });
+
+  it("leaves readline's own chords to the shell", () => {
+    expect(appShortcut(k({ key: "p", ctrlKey: true }))).toBeNull();
+    expect(appShortcut(k({ key: "e", ctrlKey: true }))).toBeNull();
+    expect(appShortcut(k({ key: "PageDown" }))).toBeNull();
+    expect(appShortcut(k({ key: "`", code: "Backquote", ctrlKey: true, altKey: true }))).toBeNull();
   });
 });

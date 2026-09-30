@@ -15,6 +15,7 @@ import { Button } from "@ui/Button";
 import { Icon } from "@ui/Icon";
 import { useProjects, LOOSE_ID, type Project } from "@store/projects";
 import { dropProject, mirrorProject } from "@shell/checkpointManager";
+import { stat } from "@bridge/commands";
 import "./ProjectSwitcher.css";
 
 /** "2 hours ago" — coarse on purpose; the list is ordered, not audited. */
@@ -46,17 +47,30 @@ export default function ProjectSwitcher() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const renameRef = useRef<HTMLInputElement | null>(null);
+  /** Keyboard highlight, an index into `visible`. */
+  const [cursor, setCursor] = useState(0);
+  /** Projects whose folder no longer exists, checked on every open. */
+  const [missing, setMissing] = useState<ReadonlySet<string>>(() => new Set());
+  const listRef = useRef<HTMLUListElement | null>(null);
 
   const projects = useProjects((s) => s.projects);
   const activeId = useProjects((s) => s.activeId);
   const renameProject = useProjects((s) => s.renameProject);
   const removeProject = useProjects((s) => s.removeProject);
+  const togglePin = useProjects((s) => s.togglePin);
 
   useEffect(() => {
     const onOpen = () => {
       setFilter("");
       setRenaming(null);
+      setCursor(0);
       setOpen(true);
+      // A folder deleted or unmounted since it was last opened would
+      // otherwise look exactly like one that is fine.
+      const list = useProjects.getState().projects.filter((p) => p.rootPath);
+      void Promise.all(
+        list.map((p) => stat(p.rootPath as string).then((st) => (st.isDir ? null : p.id), () => p.id)),
+      ).then((ids) => setMissing(new Set(ids.filter((id): id is string => id !== null))));
     };
     window.addEventListener("spark:projects:open", onOpen);
     return () => window.removeEventListener("spark:projects:open", onOpen);
@@ -69,6 +83,19 @@ export default function ProjectSwitcher() {
   const visible = useMemo(
     () => projects.filter((p) => matchesFilter(p, filter.trim())),
     [projects, filter],
+  );
+
+  useEffect(() => setCursor(0), [filter]);
+  useEffect(() => {
+    listRef.current?.querySelector(`[data-index="${cursor}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
+
+  const pin = useCallback(
+    (id: string) => {
+      const updated = togglePin(id);
+      if (updated) void mirrorProject(updated);
+    },
+    [togglePin],
   );
 
   const switchTo = useCallback((p: Project) => {
@@ -112,7 +139,22 @@ export default function ProjectSwitcher() {
         <Input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter projects…"
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setCursor((i) => Math.min(visible.length - 1, i + 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setCursor((i) => Math.max(0, i - 1));
+            } else if (e.key === "Enter") {
+              const p = visible[cursor];
+              if (p && p.rootPath && !missing.has(p.id)) {
+                e.preventDefault();
+                switchTo(p);
+              }
+            }
+          }}
+          placeholder="Filter projects…  (↑↓ to choose, Enter to open)"
           aria-label="Filter projects"
           autoFocus
         />
@@ -124,11 +166,18 @@ export default function ProjectSwitcher() {
               : "No project matches that filter."}
           </p>
         ) : (
-          <ul className="projsw__list" role="list">
-            {visible.map((p) => (
+          <ul className="projsw__list" role="list" ref={listRef}>
+            {visible.map((p, i) => (
               <li
                 key={p.id}
-                className={`projsw__row${p.id === activeId ? " projsw__row--active" : ""}`}
+                data-index={i}
+                className={[
+                  "projsw__row",
+                  p.id === activeId && "projsw__row--active",
+                  i === cursor && "projsw__row--cursor",
+                  missing.has(p.id) && "projsw__row--missing",
+                ].filter(Boolean).join(" ")}
+                onMouseMove={() => setCursor(i)}
               >
                 {renaming === p.id ? (
                   <Input
@@ -147,12 +196,17 @@ export default function ProjectSwitcher() {
                     type="button"
                     className="projsw__main"
                     onClick={() => switchTo(p)}
-                    disabled={p.id === LOOSE_ID && !p.rootPath}
+                    disabled={(p.id === LOOSE_ID && !p.rootPath) || missing.has(p.id)}
                   >
                     <Icon name={p.id === activeId ? "open" : "folder"} size={16} />
                     <span className="projsw__text">
-                      <span className="projsw__name">{p.name}</span>
-                      <span className="projsw__path">{p.rootPath ?? "Files opened without a folder"}</span>
+                      <span className="projsw__name">
+                        {p.name}
+                        {p.pinned && <Icon name="pin" size={12} className="projsw__pinMark" />}
+                      </span>
+                      <span className="projsw__path">
+                        {missing.has(p.id) ? `Folder not found — ${p.rootPath}` : (p.rootPath ?? "Files opened without a folder")}
+                      </span>
                     </span>
                     <span className="projsw__meta">
                       {p.workspace.tabs.length > 0 && (
@@ -166,6 +220,16 @@ export default function ProjectSwitcher() {
                 )}
 
                 <span className="projsw__actions">
+                  <Button
+                    variant="icon"
+                    size="sm"
+                    aria-label={`${p.pinned ? "Unpin" : "Pin"} ${p.name}`}
+                    aria-pressed={p.pinned === true}
+                    title={p.pinned ? "Unpin" : "Pin to the top of the list"}
+                    onClick={() => pin(p.id)}
+                  >
+                    <Icon name={p.pinned ? "unpin" : "pin"} size={14} />
+                  </Button>
                   <Button
                     variant="icon"
                     size="sm"
