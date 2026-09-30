@@ -15,7 +15,7 @@ vi.mock("@bridge/commands", async (importOriginal) => {
   };
 });
 
-import { readFile, readFileBase64, recentsAdd } from "@bridge/commands";
+import { readFile, readFileBase64, recentsAdd, pickMode } from "@bridge/commands";
 import { useDocs } from "@store/documents";
 import { openPath, findOpenDoc } from "./openDocument";
 
@@ -124,5 +124,13 @@ describe("openPath — one tab per file", () => {
     expect(mockedReadFile).not.toHaveBeenCalled();
     expect(findOpenDoc("/other.md")).not.toBeNull();
     expect(findOpenDoc("/nope.md")).toBeNull();
+  });
+});
+
+describe("pickMode", () => {
+  it("opens JSON as code: rich text cannot show it and wrote HTML over it", () => {
+    expect(pickMode("/a/package.json")).toBe("code");
+    expect(pickMode("/a/scene.anim.json")).toBe("animation");
+    expect(pickMode("/a/notes.md")).toBe("markdown");
   });
 });

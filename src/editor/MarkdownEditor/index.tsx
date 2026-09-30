@@ -25,6 +25,12 @@ import "../editor.css";
 import { onRevealRequest, restoreViewState, trackScroll } from "@editor/CodeEditor/viewState";
 import { bindEditEvents } from "@editor/CodeEditor/editEvents";
 
+/** Route a key binding through the same event the Format menu sends. */
+function formatEvent(kind: string): boolean {
+  window.dispatchEvent(new CustomEvent(`spark:md:format:${kind}`));
+  return true;
+}
+
 export function MarkdownEditor({ docId }: { docId: string }) {
   const doc = useDocs((s) => s.docs[docId]);
   const setRaw = useDocs((s) => s.setRaw);
@@ -67,7 +73,15 @@ export function MarkdownEditor({ docId }: { docId: string }) {
           { tag: tagExtension.list, color: "var(--syn-func)" },
           { tag: tagExtension.meta, color: "var(--syn-comment)" },
         ])),
-        keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+        keymap.of([
+          // Ahead of defaultKeymap, whose Mod-[ / Mod-] indent the line:
+          // here they are Promote / Demote Heading, as the menu says.
+          { key: "Mod-[", run: () => formatEvent("headingPromote") },
+          { key: "Mod-]", run: () => formatEvent("headingDemote") },
+          ...defaultKeymap,
+          ...historyKeymap,
+          indentWithTab,
+        ]),
         themeComp.of(EditorView.theme({}, { dark: isDark })),
         wrapComp.of(wrapRef.current ? EditorView.lineWrapping : []),
         EditorView.updateListener.of((v) => {

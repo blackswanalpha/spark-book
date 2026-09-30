@@ -870,8 +870,9 @@ export function mediaMime(path: string): string {
  *  - .svg  → "svg"
  *  - .html / .htm → "html" (webview preview)
  *  - .md / .markdown → "markdown"
- *  - .json → "rich"
- *  - everything else → "code"
+ *  - everything else, .json included → "code". JSON used to open in
+ *    "rich", which cannot show it and wrote HTML over it on the first
+ *    keystroke.
  */
 export function pickMode(path: string): ModeName {
   const lower = path.toLowerCase();
@@ -884,7 +885,6 @@ export function pickMode(path: string): ModeName {
   if (lower.endsWith(".svg")) return "svg";
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
-  if (lower.endsWith(".json")) return "rich";
   return "code";
 }
 

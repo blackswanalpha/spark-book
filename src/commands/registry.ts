@@ -3,7 +3,7 @@
    Central command table consumed by the palette, the menu,
    the title bar's MenuMirror, and keybinding dispatch.
    ============================================================ */
-import { useDocs, type DocMode } from "@store/documents";
+import { useDocs, switchableModes, type DocMode } from "@store/documents";
 import { useTerminal, activeSession } from "@store/terminal";
 import {
   readFile,
@@ -166,13 +166,10 @@ export function buildCommands(): CommandSpec[] {
       icon: "mode-code",
       run: () => {
         const a = active(); if (!a) return;
-        // Binary documents cycle only between their own two surfaces:
-        // reading base64 as source text is never what the user meant.
-        // Video and audio have one surface each.
-        if (a.mode === "video" || a.mode === "audio") return;
-        const order: DocMode[] = a.binary
-          ? ["image", "imageedit"]
-          : ["markdown", "rich", "code", "html", "svg"];
+        // switchableModes keeps binary documents on surfaces built for
+        // their bytes; video, audio and PDF have one surface each.
+        const order = switchableModes(a);
+        if (order.length < 2) return;
         const at = order.indexOf(a.mode);
         const next = order[(at < 0 ? 0 : at + 1) % order.length];
         useDocs.getState().setMode(a.id, next);

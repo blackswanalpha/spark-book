@@ -19,6 +19,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 - **A Terminal menu** with New Terminal, Run Task, Rerun Last Task, tab navigation, rename, close and the root toggle.
 - **Pin projects.** Pinned projects stay at the top of the switcher and the welcome screen, and are never dropped from the list for age.
 - **The project switcher works from the keyboard.** ↑/↓ choose, Enter opens. A project whose folder has gone is marked *Folder not found*.
+- **Format Code works.** Ctrl+Shift+I (or Shift+Alt+F) formats JavaScript, TypeScript, JSON, CSS/SCSS/Less, HTML, Vue, YAML, Markdown and GraphQL with Prettier, keeping the caret in place. One undo restores the original. For other languages it says there is no formatter instead of doing nothing.
+- **The mode chip in the status bar opens a menu** of the views the document can switch to.
+- **Rich text edits Markdown files.** A `.md` file switched to rich text shows its content and saves every edit back as Markdown. A file with images, tables, raw HTML, front matter, task lists or footnotes opens read-only there, with the reason and a button back to Markdown, because rich text cannot keep those.
 - Host commands `list_project_files` and `search_project`. Both walk the folder off the main thread and stop at a bounded number of entries, results and seconds, so a search rooted at a home directory still answers.
 
 ### Changed
@@ -39,6 +42,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 - A focused terminal swallowed the command palette, project switcher and terminal toggle shortcuts.
 - **The code editor's language label covered the start of line 1.** It sat over the text, wider than the line-number gutter. It now sits in the editor's toolbar beside the cursor position.
 - **Every menu click popped a "Command dispatched" notification.** Menus now just run the command.
+- **Ctrl+Shift+S saved instead of opening Save As.**
+- **Ctrl+B in the markdown and rich editors also hid or showed the sidebar.** It now only bolds there, and still toggles the sidebar everywhere else.
+- **JSON files opened in rich text, and the first keystroke replaced the file with HTML.** They open as code.
+- **Switching a Markdown file to rich text showed an empty page, and the first edit replaced the Markdown with HTML.**
+- **Rich text on any other file (code, SVG, plain text) could overwrite it with HTML.** It now shows a notice with a button to switch to Code, and no editor.
+- **Cycling modes on a PDF switched it into the image viewer.**
+- **Ctrl+[ and Ctrl+] indented the line in Markdown** instead of promoting or demoting the heading, as the Format menu says. They now do that in Markdown and rich text.
+- **Format Code did nothing**, from the menu or its shortcut.
+- **A new document switched to rich text started with the words "Start writing…"** as real text.
 
 ---
 

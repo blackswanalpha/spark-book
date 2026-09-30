@@ -33,6 +33,7 @@ import {
   historyKeymap,
   indentWithTab,
   toggleComment,
+  isolateHistory,
 } from "@codemirror/commands";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import {
@@ -66,6 +67,7 @@ import "../editor.css";
 import "./CodeEditor.css";
 import { onRevealRequest, restoreViewState, trackScroll } from "./viewState";
 import { bindEditEvents } from "./editEvents";
+import { canFormat, formatErrorMessage, formatSource } from "./format";
 
 /* ----------------------------------------------------------------
    Per-doc word-wrap preference (module-level ref)
@@ -151,6 +153,12 @@ function typeTheme(fontSize: number): Extension {
 interface Props {
   docId: string;
   onCursor?: (c: { line: number; col: number }) => void;
+}
+
+/** Key binding → the same event the Format Code command sends. */
+function requestFormat(): boolean {
+  window.dispatchEvent(new CustomEvent("spark:code:format"));
+  return true;
 }
 
 export function CodeEditor({ docId, onCursor }: Props) {
@@ -256,6 +264,10 @@ export function CodeEditor({ docId, onCursor }: Props) {
           { tag: tagExtension.changed, color: "var(--syn-keyword)" },
         ])),
         keymap.of([
+          // Format Code: the chord the menu shows, and VS Code's Windows
+          // one. Only the menu reached it before; the keys did nothing.
+          { key: "Mod-Shift-i", run: requestFormat, preventDefault: true },
+          { key: "Shift-Alt-f", run: requestFormat, preventDefault: true },
           ...defaultKeymap,
           ...historyKeymap,
           ...searchKeymap,
@@ -406,9 +418,40 @@ export function CodeEditor({ docId, onCursor }: Props) {
   }, [docId]);
 
   const formatAction = useCallback(() => {
-    // TODO: integrate a real formatter (prettier / language server).
-    console.info("[CodeEditor] Format (TODO)");
-  }, []);
+    const v = viewRef.current;
+    if (!v) return;
+    if (!canFormat(currentLangId)) {
+      const name = LANG_LABELS[currentLangId] || currentLangId || "plain text";
+      window.dispatchEvent(
+        new CustomEvent("spark:toast:info", { detail: { title: `No formatter for ${name}` } }),
+      );
+      return;
+    }
+    const before = v.state.doc.toString();
+    formatSource(before, currentLangId, v.state.selection.main.head, tabSize)
+      .then((res) => {
+        // The view went away, or the user typed while Prettier ran:
+        // replacing the document now would throw that typing away.
+        if (!res || viewRef.current !== v || v.state.doc.toString() !== before) return;
+        if (res.text === before) return;
+        // One transaction in its own history event, so a single undo
+        // restores the original and never takes recent typing with it.
+        v.dispatch({
+          changes: { from: 0, to: v.state.doc.length, insert: res.text },
+          selection: EditorSelection.cursor(Math.min(res.cursor, res.text.length)),
+          scrollIntoView: true,
+          userEvent: "format",
+          annotations: isolateHistory.of("full"),
+        });
+      })
+      .catch((err) => {
+        window.dispatchEvent(
+          new CustomEvent("spark:toast:error", {
+            detail: { title: "Could not format", body: formatErrorMessage(err) },
+          }),
+        );
+      });
+  }, [currentLangId, tabSize]);
 
   /* -- Global window events ---------------------------------- */
   useEffect(() => {

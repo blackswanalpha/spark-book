@@ -41,7 +41,7 @@ import { shouldShowWelcome } from "@shell/firstRun";
 import { openPath } from "@shell/openDocument";
 import { ThemeProvider, useTheme } from "@theme/ThemeProvider";
 import { ToastProvider, useToast } from "@ui/Toast";
-import { useDocs } from "@store/documents";
+import { useDocs, switchableModes } from "@store/documents";
 import { useExplorer } from "@store/explorer";
 import { hydrateSettings } from "@store/settings";
 import { useProjects, hydrateProjects, projectId } from "@store/projects";
@@ -185,11 +185,17 @@ function Shell() {
       const d = (e as CustomEvent<{ title: string; body?: string }>).detail;
       if (d?.title) toast.error(d.title, d.body);
     };
+    const onInfo = (e: Event) => {
+      const d = (e as CustomEvent<{ title: string; body?: string }>).detail;
+      if (d?.title) toast.info(d.title, d.body);
+    };
     window.addEventListener("spark:toast:success", onSuccess);
     window.addEventListener("spark:toast:error", onError);
+    window.addEventListener("spark:toast:info", onInfo);
     return () => {
       window.removeEventListener("spark:toast:success", onSuccess);
       window.removeEventListener("spark:toast:error", onError);
+      window.removeEventListener("spark:toast:info", onInfo);
     };
   }, [toast]);
 
@@ -369,6 +375,8 @@ function Shell() {
       else if (isMod && !e.shiftKey && !e.altKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); runCommand("project.quickOpen"); }
       else if (isMod && e.shiftKey && (e.key === "f" || e.key === "F")) { e.preventDefault(); runCommand("project.findInFiles"); }
       else if (isMod && e.shiftKey && (e.key === "b" || e.key === "B")) { e.preventDefault(); runCommand("project.runTask"); }
+      // Shift first: the unshifted branch below also matches "S".
+      else if (isMod && e.shiftKey && (e.key === "s" || e.key === "S")) { e.preventDefault(); runCommand("file.saveAs"); }
       else if (isMod && (e.key === "s" || e.key === "S")) { e.preventDefault(); runCommand("file.save"); }
       // Before the new-document branch: with Shift held the browser
       // reports "N", which that branch would otherwise swallow.
@@ -385,7 +393,10 @@ function Shell() {
       else if (isMod && (e.key === "=" || e.key === "+")) { e.preventDefault(); runCommand("view.zoomIn"); }
       else if (isMod && e.key === "-") { e.preventDefault(); runCommand("view.zoomOut"); }
       else if (isMod && e.key === "0") { e.preventDefault(); runCommand("view.zoomReset"); }
-      else if (isMod && (e.key === "b" || e.key === "B") && !e.shiftKey) { e.preventDefault(); sidebar.toggle(); }
+      // Ctrl+B is also bold in the markdown and rich editors, which handle
+      // it first and cancel the event; toggling the sidebar as well made
+      // every bold hide or show the file tree.
+      else if (isMod && (e.key === "b" || e.key === "B") && !e.shiftKey && !e.defaultPrevented) { e.preventDefault(); sidebar.toggle(); }
       // By physical key: with Shift held the browser reports "~", not "`".
       else if (isMod && e.shiftKey && e.code === "Backquote") { e.preventDefault(); runCommand("view.terminalNew"); }
       else if (isMod && (e.key === "`" || e.code === "Backquote")) { e.preventDefault(); runCommand("view.toggleTerminal"); }
@@ -815,6 +826,8 @@ function Shell() {
               line={activeDoc.cursor.line}
               col={activeDoc.cursor.col}
               dirty={activeDoc.dirty}
+              modes={switchableModes(activeDoc)}
+              onModeSelect={(m) => useDocs.getState().setMode(activeDoc.id, m)}
             />
           </motion.div>
         )}

@@ -20,7 +20,7 @@ import {
   watchPath as bridgeWatchPath,
   unwatchPath as bridgeUnwatchPath,
 } from "@bridge/commands";
-import { on } from "@bridge/events";
+import { on, type FileChangeEvent } from "@bridge/events";
 import { useDocs } from "@store/documents";
 
 enableMapSet();
@@ -47,14 +47,10 @@ export function directoryOf(children: Map<string, ExplorerNode[]>, path: string)
   return entry?.isDir ? path : parent;
 }
 
-export interface FileChangeEvent {
-  /** "bulk" carries no path: the host coalesced more changes than it was
-   *  willing to send individually, and every cached listing is suspect. */
-  kind: "created" | "removed" | "renamed" | "modified" | "bulk";
-  path: string;
-  from?: string;       // for "renamed"
-  isDir?: boolean;
-}
+/* One wire type for `file:changed`, declared beside the bridge that
+   receives it. This store used to keep its own copy, which had "bulk"
+   while the bridge's did not, and an `isDir` the host never sends. */
+export type { FileChangeEvent };
 
 export interface CreateFileResult {
   ok: boolean;

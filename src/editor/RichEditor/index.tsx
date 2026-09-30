@@ -18,6 +18,8 @@ import { motion } from "@motion/index";
 import "../editor.css";
 import "./RichEditor.css";
 import { restoreElementScroll, trackElementScroll } from "@editor/CodeEditor/viewState";
+import { Extension, type JSONContent } from "@tiptap/core";
+import { loadMarkdown, richFormat, toMarkdown, type RichFormat } from "./markdown";
 
 /* ----------------------------------------------------------------
    Slash menu definition. A flat list of block transforms the
@@ -95,18 +97,67 @@ const SLASH_ITEMS: SlashItem[] = [
   },
 ];
 
+/* Ctrl+[ / Ctrl+] promote and demote headings, as the Format menu lists.
+   Routed through the menu's own event so there is one implementation. */
+const HeadingKeys = Extension.create({
+  name: "sparkHeadingKeys",
+  addKeyboardShortcuts() {
+    const send = (kind: string) => () => {
+      window.dispatchEvent(new CustomEvent(`spark:rich:format:${kind}`));
+      return true;
+    };
+    return { "Mod-[": send("headingPromote"), "Mod-]": send("headingDemote") };
+  },
+});
+
+/* Module-level, so the markdown parser built from them is built once.
+   HeadingKeys adds no schema, so the markdown schema is unaffected. */
+const EXTENSIONS = [
+  StarterKit.configure({ codeBlock: { HTMLAttributes: { class: "rich-code" } } }),
+  Link.configure({ openOnClick: false, HTMLAttributes: { rel: "noreferrer noopener" } }),
+  HeadingKeys,
+];
+
+interface RichLoad {
+  /** What edits are saved as; null when rich text cannot hold the file. */
+  format: RichFormat | null;
+  content: JSONContent | string;
+  readOnlyReason: string | null;
+  normalises: boolean;
+}
+
+/** Decide, once per document, what the surface shows and writes back. */
+function loadFor(name: string | null, raw: string): RichLoad {
+  const format = richFormat(name, raw);
+  if (format === "markdown") return { format, ...loadMarkdown(raw, EXTENSIONS) };
+  if (format === "html") {
+    return { format, content: tryParseHtml(raw) ?? "", readOnlyReason: null, normalises: false };
+  }
+  return { format: null, content: "", readOnlyReason: null, normalises: false };
+}
+
 export function RichEditor({ docId }: { docId: string }) {
   const doc = useDocs((s) => s.docs[docId]);
   const setRaw = useDocs((s) => s.setRaw);
   const setScroll = useDocs((s) => s.setScroll);
+  const setMode = useDocs((s) => s.setMode);
+  // What the file is does not change while it is open in this surface,
+  // and re-deciding on every keystroke would re-parse the whole text.
+  const [load] = useState(() => loadFor(doc?.path ?? doc?.name ?? null, doc?.raw ?? ""));
+  const writable = load.format !== null && load.readOnlyReason === null;
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ codeBlock: { HTMLAttributes: { class: "rich-code" } } }),
-      Link.configure({ openOnClick: false, HTMLAttributes: { rel: "noreferrer noopener" } }),
-    ],
-    content: tryParseHtml(doc?.raw) || "<p>Start writing…</p>",
+    extensions: EXTENSIONS,
+    content: load.content,
+    editable: writable,
     onUpdate: ({ editor }) => {
-      setRaw(docId, editor.getHTML());
+      // A read-only view never writes: menu and palette commands can still
+      // change what it shows, and serialising that would drop the content
+      // that made it read-only.
+      if (!writable) return;
+      // Markdown stays markdown. Writing HTML here is what used to turn a
+      // .md file into HTML on the first keystroke.
+      if (load.format === "markdown") setRaw(docId, toMarkdown(editor.state.doc));
+      else setRaw(docId, editor.getHTML());
     },
   });
 
@@ -344,52 +395,54 @@ export function RichEditor({ docId }: { docId: string }) {
       className={["rich-editor", wrapped ? "rich-editor--wrap" : ""].filter(Boolean).join(" ")}
     >
       {/* ---- Top toolbar -------------------------------------- */}
-      <div className="rich-toolbar" role="toolbar" aria-label="Rich text formatting">
-        <Button size="sm" variant="ghost" icon="bold"
-          onClick={() => editor.chain().focus().toggleBold().run()}
-          title="Bold (⌘B)" />
-        <Button size="sm" variant="ghost" icon="italic"
-          onClick={() => editor.chain().focus().toggleItalic().run()}
-          title="Italic (⌘I)" />
-        <Button size="sm" variant="ghost" icon="code"
-          onClick={() => editor.chain().focus().toggleCode().run()}
-          title="Inline code" />
-        <span className="rich-toolbar__divider" />
-        <Button size="sm" variant="ghost" icon="link"
-          onClick={openLinkEditor}
-          title="Link (⌘K)" />
-        <span className="rich-toolbar__divider" />
-        <Button size="sm" variant="ghost" icon="h1"
-          onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-          title="Heading 1" />
-        <Button size="sm" variant="ghost" icon="h2"
-          onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-          title="Heading 2" />
-        <Button size="sm" variant="ghost" icon="h3"
-          onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-          title="Heading 3" />
-        <span className="rich-toolbar__divider" />
-        <Button size="sm" variant="ghost" icon="list-ul"
-          onClick={() => editor.chain().focus().toggleBulletList().run()}
-          title="Bulleted list" />
-        <Button size="sm" variant="ghost" icon="list-ol"
-          onClick={() => editor.chain().focus().toggleOrderedList().run()}
-          title="Numbered list" />
-        <Button size="sm" variant="ghost" icon="quote"
-          onClick={() => editor.chain().focus().toggleBlockquote().run()}
-          title="Blockquote" />
-        <Button size="sm" variant="ghost" icon="code"
-          onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-          title="Code block" />
-        <span className="rich-toolbar__divider" />
-        <Button size="sm" variant="ghost" icon="divider"
-          onClick={() => editor.chain().focus().setHorizontalRule().run()}
-          title="Horizontal rule" />
-        <span className="rich-toolbar__spacer" />
-        <span className="rich-toolbar__status" aria-live="polite">
-          {blockCount} {blockCount === 1 ? "block" : "blocks"}
-        </span>
-      </div>
+      {writable && (
+        <div className="rich-toolbar" role="toolbar" aria-label="Rich text formatting">
+          <Button size="sm" variant="ghost" icon="bold"
+            onClick={() => editor.chain().focus().toggleBold().run()}
+            title="Bold (⌘B)" />
+          <Button size="sm" variant="ghost" icon="italic"
+            onClick={() => editor.chain().focus().toggleItalic().run()}
+            title="Italic (⌘I)" />
+          <Button size="sm" variant="ghost" icon="code"
+            onClick={() => editor.chain().focus().toggleCode().run()}
+            title="Inline code" />
+          <span className="rich-toolbar__divider" />
+          <Button size="sm" variant="ghost" icon="link"
+            onClick={openLinkEditor}
+            title="Link (⌘K)" />
+          <span className="rich-toolbar__divider" />
+          <Button size="sm" variant="ghost" icon="h1"
+            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+            title="Heading 1" />
+          <Button size="sm" variant="ghost" icon="h2"
+            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+            title="Heading 2" />
+          <Button size="sm" variant="ghost" icon="h3"
+            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+            title="Heading 3" />
+          <span className="rich-toolbar__divider" />
+          <Button size="sm" variant="ghost" icon="list-ul"
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            title="Bulleted list" />
+          <Button size="sm" variant="ghost" icon="list-ol"
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            title="Numbered list" />
+          <Button size="sm" variant="ghost" icon="quote"
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            title="Blockquote" />
+          <Button size="sm" variant="ghost" icon="code"
+            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+            title="Code block" />
+          <span className="rich-toolbar__divider" />
+          <Button size="sm" variant="ghost" icon="divider"
+            onClick={() => editor.chain().focus().setHorizontalRule().run()}
+            title="Horizontal rule" />
+          <span className="rich-toolbar__spacer" />
+          <span className="rich-toolbar__status" aria-live="polite">
+            {blockCount} {blockCount === 1 ? "block" : "blocks"}
+          </span>
+        </div>
+      )}
 
       {/* ---- Bubble menu ------------------------------------- */}
       {editor && (
@@ -490,8 +543,34 @@ export function RichEditor({ docId }: { docId: string }) {
         </PopoverContent>
       </Popover>
 
+      {/* ---- Why this file cannot be edited here ------------- */}
+      {(load.format === null || load.readOnlyReason || load.normalises) && (
+        <div
+          className={`rich-notice${load.format === null || load.readOnlyReason ? " rich-notice--blocked" : ""}`}
+          role="status"
+        >
+          <Icon name={load.format === null || load.readOnlyReason ? "lock" : "alert"} size={14} />
+          <span className="rich-notice__text">
+            {load.format === null
+              ? "Rich text edits Markdown and HTML files. Switch to Code to edit this one."
+              : load.readOnlyReason
+                ? `${load.readOnlyReason} Rich text cannot keep that, so this view is read-only. Switch to Markdown to edit.`
+                : "Edits here are saved as Markdown. Some formatting, such as list markers and heading style, is rewritten."}
+          </span>
+          {(load.format === null || load.readOnlyReason) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setMode(docId, load.format === null ? "code" : "markdown")}
+            >
+              {load.format === null ? "Switch to Code" : "Switch to Markdown"}
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* ---- Surface ----------------------------------------- */}
-      <EditorContent editor={editor} className="editor editor--rich" />
+      {load.format !== null && <EditorContent editor={editor} className="editor editor--rich" />}
 
       {/* ---- Slash menu -------------------------------------- */}
       {slashOpen && slashStyle && (

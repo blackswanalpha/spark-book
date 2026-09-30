@@ -36,6 +36,21 @@
    Word-wrap toggle (toggled by the view.toggleWordWrap command).
    ---------------------------------------------------------------- */
 .rich-editor { white-space: pre; }
+
+/* Why a file is read-only here, or what an edit will rewrite. */
+.rich-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--size-sm);
+  white-space: normal;
+}
+.rich-notice--blocked { color: var(--text); }
+.rich-notice__text { flex: 1 1 auto; min-width: 0; }
 .rich-editor--wrap,
 .rich-editor--wrap .ProseMirror { white-space: pre-wrap; }
 
