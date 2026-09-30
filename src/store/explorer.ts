@@ -104,7 +104,9 @@ interface Actions {
   toggleShowHidden: () => void;
   setExpanded: (path: string, expanded: boolean) => Promise<void>;
   toggleDir: (path: string) => Promise<void>;
-  loadChildren: (path: string) => Promise<void>;
+  /** `quiet` re-reads without the loading/error flags and leaves the
+   *  listing untouched when nothing changed; the file watcher uses it. */
+  loadChildren: (path: string, opts?: { quiet?: boolean }) => Promise<void>;
   refresh: (path?: string) => Promise<void>;
   collapseAll: () => void;
   setSelected: (path: string | null) => void;
@@ -143,35 +145,60 @@ interface Actions {
    Bumped on every setRoot() so any in-flight loadChildren from a
    previous root can detect it's stale and drop its result. */
 let _loadGen = 0;
+/* Folders the watcher asked to re-read, gathered for one pass. The host
+   sends each change as its own event, up to 65 per flush, so re-reading
+   per event read one folder dozens of times in a burst. */
+const _refreshQueue = new Set<string>();
+let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+const REFRESH_BATCH_MS = 150;
+
+/** Newest loadChildren request per folder; see loadChildren. */
+let _loadSeq = 0;
+const _latestLoad = new Map<string, number>();
 
 /* ---------- Module-scope: the host watcher for the current root.
    Exactly one watch is live at a time; retargeting it is the only way
    the tree learns about changes made outside the app. */
 let _watchId: string | null = null;
-let _watchSeq = 0;
+/** Root `_watchId` was requested for (null when nothing is watched). */
+let _watchedRoot: string | null = null;
+/** Root the latest navigation wants watched. */
+let _wantedRoot: string | null = null;
+let _watchSync: Promise<void> | null = null;
 
-/** Point the host watcher at `root` (or stop it when null). */
-async function retargetWatch(root: string | null): Promise<void> {
-  const seq = ++_watchSeq;
-  const previous = _watchId;
-  _watchId = null;
-  if (previous) {
-    await bridgeUnwatchPath(previous).catch(() => {});
-  }
-  if (root === null) return;
-  try {
-    const id = await bridgeWatchPath(root);
-    // A newer retarget started while this one was in flight — its watch
-    // is the one that should survive, so drop ours rather than clobber it.
-    if (seq !== _watchSeq) {
-      await bridgeUnwatchPath(id).catch(() => {});
-      return;
-    }
-    _watchId = id;
-  } catch {
-    // Watching is an enhancement: without it the tree still works, it
-    // just needs a manual refresh. Never fail navigation over it.
+/**
+ * Point the host watcher at `root` (or stop it when null).
+ *
+ * One host call is in flight at a time. Each watch walks up to 4096
+ * directories and holds an inotify instance, so clicking Up five times
+ * used to start five walks at once, and every discarded one still spent
+ * its watches until it was unwatched. Now the loop drops the old watch,
+ * then watches whatever the newest navigation asked for.
+ */
+function retargetWatch(root: string | null): Promise<void> {
+  _wantedRoot = root;
+  // `.finally` runs after the assignment even when there is nothing to
+  // do, so a finished loop can never leave a stale promise behind.
+  _watchSync ??= syncWatch().finally(() => { _watchSync = null; });
+  return _watchSync;
+}
+
+async function syncWatch(): Promise<void> {
+  while (_watchedRoot !== _wantedRoot) {
+    const target = _wantedRoot;
+    const previous = _watchId;
     _watchId = null;
+    _watchedRoot = null;
+    if (previous) await bridgeUnwatchPath(previous).catch(() => {});
+    if (target === null) continue;
+    try {
+      _watchId = await bridgeWatchPath(target);
+    } catch {
+      // Watching is an enhancement: without it the tree still works, it
+      // just needs a manual refresh. Never fail navigation over it.
+      _watchId = null;
+    }
+    _watchedRoot = target;
   }
 }
 
@@ -320,6 +347,12 @@ function parentOf(path: string): string | null {
 /** Keep a selection only while it remains inside `root`. */
 function keepSelection(selected: string | null, root: string): string | null {
   return selected && isUnder(selected, root) ? selected : null;
+}
+
+/** True when a fresh listing names the same entries as the cached one. */
+function sameListing(prev: ExplorerNode[] | undefined, next: ExplorerNode[]): boolean {
+  if (!prev || prev.length !== next.length) return false;
+  return prev.every((n, i) => n.name === next[i].name && n.isDir === next[i].isDir && n.isFile === next[i].isFile);
 }
 
 /** Remove `path` from the loading set without touching anything else. */
@@ -627,15 +660,26 @@ export const useExplorer = create<State & Actions>((set, get) => ({
     await get().setExpanded(path, !wasExpanded);
   },
 
-  loadChildren: async (path) => {
+  loadChildren: async (path, opts) => {
+    const quiet = opts?.quiet === true;
     const myGen = _loadGen;
-    const loading = new Set(get().loading);
-    const errors = new Map(get().errors);
-    loading.add(path);
-    errors.delete(path);
-    set({ loading, errors });
+    // A watcher event, an expand and a refresh can all read one folder at
+    // once, and the replies arrive in any order. Only the newest request
+    // may write, or an older listing lands last and the first reply to
+    // arrive clears the spinner while the newer read is still going.
+    const token = ++_loadSeq;
+    _latestLoad.set(path, token);
+    if (!quiet) {
+      const loading = new Set(get().loading);
+      const errors = new Map(get().errors);
+      loading.add(path);
+      errors.delete(path);
+      set({ loading, errors });
+    }
     try {
       const entries = await readDir(path);
+      if (_latestLoad.get(path) !== token) return;
+      _latestLoad.delete(path);
       if (myGen !== _loadGen) {
         // Root changed under us — drop the result, but still clear the
         // loading flag or this row keeps a spinner that never resolves.
@@ -643,13 +687,27 @@ export const useExplorer = create<State & Actions>((set, get) => ({
         return;
       }
       const nodes = toNodes(path, entries);
-      const children = new Map(get().children);
-      const loadingAfter = new Set(get().loading);
+      const before = get();
+      // Unchanged: keep the old array so nothing re-renders. A save or a
+      // log append inside a listed folder changes no names, and a tree
+      // rooted at `~` or `/` hears about those several times a second.
+      if (sameListing(before.children.get(path), nodes) && !before.errors.has(path)) {
+        clearLoading(get, set, path);
+        return;
+      }
+      const children = new Map(before.children);
+      const loadingAfter = new Set(before.loading);
+      const errorsAfter = new Map(before.errors);
       children.set(path, nodes);
       loadingAfter.delete(path);
-      set({ children, loading: loadingAfter });
+      errorsAfter.delete(path);
+      set({ children, loading: loadingAfter, errors: errorsAfter });
     } catch (err) {
-      if (myGen !== _loadGen) {
+      if (_latestLoad.get(path) !== token) return;
+      _latestLoad.delete(path);
+      // A background re-read that fails (the folder was just removed)
+      // is settled by the parent's own re-read, not by an error row.
+      if (myGen !== _loadGen || quiet) {
         clearLoading(get, set, path);
         return;
       }
@@ -989,9 +1047,33 @@ export const useExplorer = create<State & Actions>((set, get) => ({
 
       // Too much changed at once to name it. Re-read what is on screen
       // rather than trusting listings taken before the storm.
+      // Only open folders are re-read. Re-reading every cached listing
+      // (the filter index alone holds up to 3000) started thousands of
+      // reads at once, each copying the whole tree map, and a tree rooted
+      // at `/` got a bulk event whenever the system was busy. The other
+      // listings are dropped and read again when opened.
+      const queue = (dirs: Iterable<string>) => {
+        for (const d of dirs) _refreshQueue.add(d);
+        _refreshTimer ??= setTimeout(() => {
+          _refreshTimer = null;
+          const batch = [..._refreshQueue];
+          _refreshQueue.clear();
+          // The tree may have moved on while the batch waited.
+          const current = get().root;
+          for (const d of batch) {
+            if (current && isUnder(d, current)) void get().loadChildren(d, { quiet: true });
+          }
+        }, REFRESH_BATCH_MS);
+      };
       if (evt.kind === "bulk") {
-        for (const dir of state.children.keys()) void state.loadChildren(dir);
-        if (!state.children.has(root)) void state.loadChildren(root);
+        const open = [...state.children.keys()].filter((dir) => dir === root || state.expanded.has(dir));
+        if (open.length !== state.children.size) {
+          const kept = new Map<string, ExplorerNode[]>();
+          for (const dir of open) kept.set(dir, state.children.get(dir)!);
+          set({ children: kept });
+          if (state.filter.trim() && !state.indexing) void indexTree(get, set, root);
+        }
+        queue(state.children.has(root) ? open : [...open, root]);
         return;
       }
       if (!evt.path) return;
@@ -1026,9 +1108,7 @@ export const useExplorer = create<State & Actions>((set, get) => ({
       }
 
       if (targets.size === 0 && isUnder(candidate, root)) targets.add(root);
-      for (const a of targets) {
-        void state.loadChildren(a);
-      }
+      queue(targets);
     });
     return unlisten;
   },

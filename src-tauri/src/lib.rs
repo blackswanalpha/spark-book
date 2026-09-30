@@ -48,16 +48,73 @@ pub struct WriteReceipt {
     pub inode: u64,
 }
 
-#[tauri::command]
-fn read_file(path: String) -> Result<String, HostError> {
-    std::fs::read_to_string(&path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => HostError::NotFound { path: path.clone() },
-        std::io::ErrorKind::PermissionDenied => HostError::PermissionDenied { path: path.clone() },
-        std::io::ErrorKind::InvalidData => HostError::NotUtf8 { path: path.clone() },
+/// Run filesystem work on the blocking pool. A plain command runs on the
+/// main thread, so browsing outside the project froze every window: a
+/// listing of a stalled FUSE or network mount, or a read of a FIFO such as
+/// `/run/user/<uid>/gnome-session-leader-fifo`, never returned.
+async fn blocking<T, F>(work: F) -> Result<T, HostError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, HostError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| HostError::Internal {
+            message: e.to_string(),
+        })?
+}
+
+/// Largest file opened as text, and as base64. The read itself is bounded
+/// because the size on disk cannot be trusted: procfs and sysfs report 0
+/// for files that read back gigabytes (`/proc/self/pagemap`).
+const MAX_TEXT_READ: u64 = 64 << 20;
+const MAX_BINARY_READ: u64 = 256 << 20;
+
+/// The bytes of the regular file at `path`, refusing anything past `limit`.
+fn read_bounded(path: &str, limit: u64) -> Result<Vec<u8>, HostError> {
+    use std::io::Read;
+    let io_err = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::NotFound => HostError::NotFound { path: path.into() },
+        std::io::ErrorKind::PermissionDenied => HostError::PermissionDenied { path: path.into() },
         _ => HostError::Internal {
             message: e.to_string(),
         },
+    };
+    // metadata() follows symlinks, so a link to a file still opens. A
+    // device, FIFO or socket does not: `/dev/zero` never ends and a FIFO
+    // blocks the open until a writer appears.
+    let meta = std::fs::metadata(path).map_err(io_err)?;
+    if meta.is_dir() {
+        return Err(HostError::IsADirectory { path: path.into() });
+    }
+    if !meta.is_file() {
+        return Err(HostError::InvalidPath {
+            path: path.into(),
+            reason: "not a regular file".into(),
+        });
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(io_err)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_err)?;
+    if bytes.len() as u64 > limit {
+        return Err(HostError::InvalidPath {
+            path: path.into(),
+            reason: format!("larger than {} MiB", limit >> 20),
+        });
+    }
+    Ok(bytes)
+}
+
+#[tauri::command]
+async fn read_file(path: String) -> Result<String, HostError> {
+    blocking(move || {
+        let bytes = read_bounded(&path, MAX_TEXT_READ)?;
+        String::from_utf8(bytes).map_err(|_| HostError::NotUtf8 { path })
     })
+    .await
 }
 
 #[tauri::command]
@@ -86,7 +143,11 @@ fn write_file(path: String, contents: String) -> Result<WriteReceipt, HostError>
 }
 
 #[tauri::command]
-fn read_dir(path: String) -> Result<Vec<DirEntry>, HostError> {
+async fn read_dir(path: String) -> Result<Vec<DirEntry>, HostError> {
+    blocking(move || read_dir_blocking(&path)).await
+}
+
+fn read_dir_blocking(path: &str) -> Result<Vec<DirEntry>, HostError> {
     let mut out = vec![];
     for entry in std::fs::read_dir(&path)? {
         let entry = entry?;
@@ -110,7 +171,11 @@ pub struct DirEntry {
 }
 
 #[tauri::command]
-fn stat(path: String) -> Result<FileStat, HostError> {
+async fn stat(path: String) -> Result<FileStat, HostError> {
+    blocking(move || stat_blocking(path)).await
+}
+
+fn stat_blocking(path: String) -> Result<FileStat, HostError> {
     let meta = std::fs::metadata(&path)?;
     Ok(FileStat {
         path: path.clone(),
@@ -140,7 +205,11 @@ pub struct FileStat {
 }
 
 #[tauri::command]
-fn create_file(path: String, contents: Option<String>) -> Result<FileStat, HostError> {
+async fn create_file(path: String, contents: Option<String>) -> Result<FileStat, HostError> {
+    blocking(move || create_file_blocking(path, contents)).await
+}
+
+fn create_file_blocking(path: String, contents: Option<String>) -> Result<FileStat, HostError> {
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -183,7 +252,11 @@ fn create_file(path: String, contents: Option<String>) -> Result<FileStat, HostE
 }
 
 #[tauri::command]
-fn mkdir(path: String) -> Result<(), HostError> {
+async fn mkdir(path: String) -> Result<(), HostError> {
+    blocking(move || mkdir_blocking(path)).await
+}
+
+fn mkdir_blocking(path: String) -> Result<(), HostError> {
     match std::fs::create_dir_all(&path) {
         Ok(()) => Ok(()),
         Err(e) => match e.kind() {
@@ -198,7 +271,11 @@ fn mkdir(path: String) -> Result<(), HostError> {
 }
 
 #[tauri::command]
-fn rename(from: String, to: String) -> Result<(), HostError> {
+async fn rename(from: String, to: String) -> Result<(), HostError> {
+    blocking(move || rename_blocking(from, to)).await
+}
+
+fn rename_blocking(from: String, to: String) -> Result<(), HostError> {
     if std::fs::metadata(&to).is_ok() {
         return Err(HostError::AlreadyExists { path: to });
     }
@@ -214,7 +291,11 @@ fn rename(from: String, to: String) -> Result<(), HostError> {
 /// A trash failure is reported rather than silently falling back to a
 /// permanent delete: the user asked for something recoverable.
 #[tauri::command]
-fn delete(path: String, permanent: Option<bool>) -> Result<(), HostError> {
+async fn delete(path: String, permanent: Option<bool>) -> Result<(), HostError> {
+    blocking(move || delete_blocking(path, permanent)).await
+}
+
+fn delete_blocking(path: String, permanent: Option<bool>) -> Result<(), HostError> {
     let meta = std::fs::metadata(&path)?;
     if !permanent.unwrap_or(false) {
         return trash::delete(&path).map_err(|e| HostError::Internal {
@@ -230,7 +311,11 @@ fn delete(path: String, permanent: Option<bool>) -> Result<(), HostError> {
 }
 
 #[tauri::command]
-fn copy(from: String, to: String) -> Result<(), HostError> {
+async fn copy(from: String, to: String) -> Result<(), HostError> {
+    blocking(move || copy_blocking(from, to)).await
+}
+
+fn copy_blocking(from: String, to: String) -> Result<(), HostError> {
     if std::fs::metadata(&to).is_ok() {
         return Err(HostError::AlreadyExists { path: to });
     }
@@ -393,18 +478,15 @@ fn media_allow(app: tauri::AppHandle, path: String) -> Result<(), HostError> {
 }
 
 #[tauri::command]
-fn read_file_base64(path: String) -> Result<String, HostError> {
-    let bytes = std::fs::read(&path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => HostError::NotFound { path: path.clone() },
-        std::io::ErrorKind::PermissionDenied => HostError::PermissionDenied { path: path.clone() },
-        _ => HostError::Internal {
-            message: e.to_string(),
-        },
-    })?;
-    // base64 encode without extra deps: use base64 crate if available, else manual
-    // Use `base64` via `tauri`'s dependency if present; fallback to manual.
-    // We add base64 crate as optional; implement simple encode.
-    Ok(encode_base64(&bytes))
+async fn read_file_base64(path: String) -> Result<String, HostError> {
+    blocking(move || {
+        let bytes = read_bounded(&path, MAX_BINARY_READ)?;
+        // base64 encode without extra deps: use base64 crate if available, else manual
+        // Use `base64` via `tauri`'s dependency if present; fallback to manual.
+        // We add base64 crate as optional; implement simple encode.
+        Ok(encode_base64(&bytes))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -726,5 +808,40 @@ mod url_tests {
         assert!(!safe_url("https://a.com/ x"));
         assert!(!safe_url("https://a.com/\"&calc"));
         assert!(!safe_url("https://a.com/\ncalc"));
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::{read_bounded, HostError};
+
+    #[cfg(unix)]
+    #[test]
+    fn devices_are_refused_instead_of_read_forever() {
+        assert!(matches!(
+            read_bounded("/dev/zero", 1024),
+            Err(HostError::InvalidPath { .. })
+        ));
+    }
+
+    #[test]
+    fn a_file_past_the_limit_is_refused() {
+        let path = std::env::temp_dir().join(format!("spark-read-{}", std::process::id()));
+        std::fs::write(&path, vec![b'x'; 2048]).unwrap();
+        let p = path.to_str().unwrap();
+        assert!(matches!(read_bounded(p, 1024), Err(HostError::InvalidPath { .. })));
+        assert_eq!(read_bounded(p, 4096).unwrap().len(), 2048);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// procfs reports 0 bytes for files that read back far more.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_proc_file_is_bounded_by_what_it_reads_not_its_size() {
+        assert_eq!(std::fs::metadata("/proc/self/maps").unwrap().len(), 0);
+        assert!(matches!(
+            read_bounded("/proc/self/maps", 16),
+            Err(HostError::InvalidPath { .. })
+        ));
     }
 }
