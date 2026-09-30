@@ -191,7 +191,8 @@ fn read_text(path: &Path) -> Option<String> {
     if meta.len() > SEARCH_MAX_FILE {
         return None;
     }
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    // At most SEARCH_MAX_FILE by the check above, so it always fits.
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
     std::fs::File::open(path).ok()?.read_to_end(&mut bytes).ok()?;
     if bytes[..bytes.len().min(8192)].contains(&0) {
         return None;
