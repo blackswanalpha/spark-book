@@ -9,13 +9,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Sem
 ## [Unreleased]
 
 ### Added
-- Nothing yet.
+
+- **Go to File** (Ctrl+P). Fuzzy file names across the whole project, with open tabs first. `name:42` opens the file on line 42.
+- **Find in Files** (Ctrl+Shift+F). Literal text across the project, with a match-case toggle (Alt+C). Enter opens the file on the matching line. `.git`, `node_modules`, `target`, `dist`, `build` and hidden folders are skipped.
+- **Run Task** (Ctrl+Shift+B) and **Rerun Last Task**. Offers the project's package.json scripts (npm, pnpm, yarn or bun, from the lockfile), Makefile and justfile targets, and the usual Cargo and Go commands. Each task runs in its own terminal tab, named after the task, at the project root.
+- **Terminal tabs follow the shell.** A tab is named after the directory its shell is in now, not the one it started in, and a relaunch reopens it there.
+- **Rename a terminal tab** by double-clicking it, pressing F2 on it, or running *Terminal: Rename Tab*. The name is kept across relaunches.
+- **Switch terminal tabs** with Ctrl+PageUp / Ctrl+PageDown, or *Terminal: Next Tab* / *Previous Tab*. **New Terminal** is Ctrl+Shift+`.
+- **A Terminal menu** with New Terminal, Run Task, Rerun Last Task, tab navigation, rename, close and the root toggle.
+- **Pin projects.** Pinned projects stay at the top of the switcher and the welcome screen, and are never dropped from the list for age.
+- **The project switcher works from the keyboard.** ↑/↓ choose, Enter opens. A project whose folder has gone is marked *Folder not found*.
+- Host commands `list_project_files` and `search_project`. Both walk the folder off the main thread and stop at a bounded number of entries, results and seconds, so a search rooted at a home directory still answers.
 
 ### Changed
-- Nothing yet.
+
+- **Closing the terminal panel hides it.** The shells keep running and are there, output and all, when it opens again.
+- **Opening a file that is already open switches to its tab** instead of opening a second copy.
+- Ctrl+`, Ctrl+Shift+`, Ctrl+Shift+P and Ctrl+Shift+E reach the app while a terminal has the keyboard. Ctrl+P and Ctrl+E still go to the shell.
+- New Terminal and Toggle Root Shell moved from the View menu to the Terminal menu.
 
 ### Fixed
-- Nothing yet.
+
+- **Hiding the terminal killed every program running in it.** A build, a dev server or an agent ended each time the panel was toggled away, and reopening it started fresh shells.
+- **Restored terminals opened where they had started, not where you left them.**
+- **Two tabs of one file could hold different text,** and saving one overwrote what had been typed into the other. Workspaces saved with duplicate tabs open with one tab per file.
+- **Opening a project whose folder had been deleted** closed the current project and left the file tree spinning. It now says *Folder not found* and stays where you are.
+- **The file tree spun forever on a folder it could not read.** The reason, such as *Permission denied*, is now shown.
+- **A crash, logout or killed process could restore an older workspace** than the one last saved. On launch the newer of the two saved copies wins.
+- A focused terminal swallowed the command palette, project switcher and terminal toggle shortcuts.
 
 ---
 
