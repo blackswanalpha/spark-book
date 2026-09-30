@@ -211,6 +211,16 @@ describe("window rows", () => {
     expect(toDisk(s).windows.map((w) => w.label)).toEqual(["editor-2"]);
   });
 
+  it("drops the last closed window's row once a new window registers", () => {
+    let s = saveWindow(fresh(), win("main", "/a", 1), T).session;
+    // Closed while the Projects window keeps the app running.
+    s = forgetWindow(s, "main", T);
+    expect(toDisk(s).windows).toHaveLength(1);
+    const { session, label } = allocateLabel(s);
+    s = saveWindow(session, win(label, "/b", 0), T).session;
+    expect(toDisk(s).windows.map((w) => w.label)).toEqual([label]);
+  });
+
   it("hands out a fresh label every time", () => {
     const a = allocateLabel(fresh());
     const b = allocateLabel(a.session);

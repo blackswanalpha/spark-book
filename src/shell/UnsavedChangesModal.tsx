@@ -15,6 +15,10 @@ export interface UnsavedChangesModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   documentName: string;
+  /** Replaces the one-document sentence, e.g. for several files at once. */
+  description?: string;
+  /** Label of the save button; "Save" by default. */
+  saveLabel?: string;
   context?: string;
   busy?: boolean;
   errorMessage?: string | null;
@@ -25,6 +29,8 @@ export default function UnsavedChangesModal({
   open,
   onOpenChange,
   documentName,
+  description: descriptionOverride,
+  saveLabel = "Save",
   context,
   busy = false,
   errorMessage = null,
@@ -65,7 +71,7 @@ export default function UnsavedChangesModal({
     [busy, onChoose, onOpenChange],
   );
 
-  const description = `You have unsaved changes in “${documentName}”.`;
+  const description = descriptionOverride ?? `You have unsaved changes in “${documentName}”.`;
 
   return (
     <Dialog
@@ -100,7 +106,7 @@ export default function UnsavedChangesModal({
           loading={busy}
           autoFocus
         >
-          Save
+          {saveLabel}
         </Button>
       </DialogFooter>
     </Dialog>
