@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::HostError;
 
@@ -119,7 +119,17 @@ fn is_skipped(name: &std::ffi::OsStr) -> bool {
 /// what stops a Flutter project's `.plugin_symlinks` from dragging the
 /// whole pub cache into the watch set — and it also makes a symlink
 /// cycle impossible to walk into.
+///
+/// The walk also stays on the root's filesystem. Browsing up to `/` used
+/// to spend most of the budget inside `/proc` and `/sys` (thousands of
+/// per-process directories that never report a change) and could stall on
+/// a FUSE or network mount under `/run/user` or `/mnt`.
 fn watchable_dirs(root: &Path) -> (Vec<PathBuf>, bool) {
+    #[cfg(unix)]
+    let root_dev = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(root).ok().map(|m| m.dev())
+    };
     let mut out = vec![root.to_path_buf()];
     let mut frontier = vec![root.to_path_buf()];
     let mut depth = 0usize;
@@ -144,6 +154,15 @@ fn watchable_dirs(root: &Path) -> (Vec<PathBuf>, bool) {
                 let name = entry.file_name();
                 if is_skipped(&name) {
                     continue;
+                }
+                // DirEntry::metadata does not follow symlinks, and a mount
+                // point reports the mounted filesystem's device.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if entry.metadata().ok().map(|m| m.dev()) != root_dev {
+                        continue;
+                    }
                 }
                 let path = entry.path();
                 out.push(path.clone());
@@ -239,13 +258,24 @@ fn coalesce(events: Vec<Event>) -> Vec<FileChange> {
     seen
 }
 
+/// Async so the walk runs on the blocking pool: as a plain command it ran
+/// on the main thread, and every window froze while it walked.
 #[tauri::command]
-pub fn watch_path(
+pub async fn watch_path(
     app: AppHandle,
     window: tauri::Window,
-    manager: tauri::State<'_, WatchManager>,
     path: String,
 ) -> Result<String, HostError> {
+    let owner = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || start_watch(app, owner, path))
+        .await
+        .map_err(|e| HostError::Internal {
+            message: e.to_string(),
+        })?
+}
+
+fn start_watch(app: AppHandle, owner: String, path: String) -> Result<String, HostError> {
+    let manager = app.state::<WatchManager>();
     let target = std::path::PathBuf::from(&path);
     if !target.exists() {
         return Err(HostError::NotFound { path });
@@ -293,12 +323,12 @@ pub fn watch_path(
     let watcher = Arc::new(Mutex::new(watcher));
     let id = format!("watch-{}", manager.next_id.fetch_add(1, Ordering::SeqCst) + 1);
     let stop = Arc::new(AtomicBool::new(false));
-    let owner = window.label().to_string();
 
     {
         let stop = stop.clone();
         let watcher = watcher.clone();
         let owner = owner.clone();
+        let app = app.clone();
         let mut watched = dirs.len();
         std::thread::spawn(move || {
             let mut batch: Vec<Event> = Vec::new();
@@ -589,5 +619,13 @@ mod tests {
     #[test]
     fn an_event_with_no_path_is_skipped() {
         assert!(coalesce(vec![ev(EventKind::Create(CreateKind::File), &[])]).is_empty());
+    }
+
+    /// Browsing up to `/` spent most of the budget on `/proc` and `/sys`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_walk_stays_on_the_root_filesystem() {
+        let (dirs, _) = watchable_dirs(std::path::Path::new("/"));
+        assert!(!dirs.iter().any(|d| d.starts_with("/proc") || d.starts_with("/sys")));
     }
 }
